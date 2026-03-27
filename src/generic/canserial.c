@@ -78,6 +78,7 @@ canserial_tx_task(void)
 }
 DECL_TASK(canserial_tx_task);
 
+#if !(CONFIG_USBCANBUS && CONFIG_SERIAL)
 // Encode and transmit a "response" message
 void
 console_sendf(const struct command_encoder *ce, va_list args)
@@ -106,7 +107,7 @@ console_sendf(const struct command_encoder *ce, va_list args)
     CanData.transmit_max = tmax + msglen;
     canserial_notify_tx();
 }
-
+#endif
 
 /****************************************************************
  * CAN "admin" command handling

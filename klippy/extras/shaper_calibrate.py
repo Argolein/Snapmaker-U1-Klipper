@@ -13,7 +13,7 @@ MAX_SHAPER_FREQ = 150.
 
 TEST_DAMPING_RATIOS=[0.075, 0.1, 0.15]
 
-AUTOTUNE_SHAPERS = ['zv', 'mzv', 'ei', '2hump_ei', '3hump_ei']
+AUTOTUNE_SHAPERS = ['zv', 'zvd', 'mzv', 'ei', '2hump_ei', '3hump_ei']
 
 ######################################################################
 # Frequency response calculation and shaper auto-tuning
@@ -332,9 +332,9 @@ class ShaperCalibrate:
                 scv, max_smoothing, test_damping_ratios, max_freq))
             if logger is not None:
                 logger("Fitted shaper '%s' frequency = %.1f Hz "
-                       "(vibrations = %.1f%%, smoothing ~= %.3f)" % (
+                       "(vibrations = %.1f%%, smoothing ~= %.3f, score = %.6f)" % (
                            shaper.name, shaper.freq, shaper.vibrs * 100.,
-                           shaper.smoothing))
+                           shaper.smoothing, shaper.score))
                 logger("To avoid too much smoothing with '%s', suggested "
                        "max_accel <= %.0f mm/sec^2" % (
                            shaper.name, round(shaper.max_accel / 100.) * 100.))
@@ -347,14 +347,14 @@ class ShaperCalibrate:
                 best_shaper = shaper
         return best_shaper, all_shapers
 
-    def save_params(self, configfile, axis, shaper_name, shaper_freq):
-        if axis == 'xy':
-            self.save_params(configfile, 'x', shaper_name, shaper_freq)
-            self.save_params(configfile, 'y', shaper_name, shaper_freq)
-        else:
-            configfile.set('input_shaper', 'shaper_type_'+axis, shaper_name)
-            configfile.set('input_shaper', 'shaper_freq_'+axis,
-                           '%.1f' % (shaper_freq,))
+    # def save_params(self, configfile, axis, shaper_name, shaper_freq):
+    #     if axis == 'xy':
+    #         self.save_params(configfile, 'x', shaper_name, shaper_freq)
+    #         self.save_params(configfile, 'y', shaper_name, shaper_freq)
+    #     else:
+    #         configfile.set('input_shaper', 'shaper_type_'+axis, shaper_name)
+    #         configfile.set('input_shaper', 'shaper_freq_'+axis,
+    #                        '%.1f' % (shaper_freq,))
 
     def apply_params(self, input_shaper, axis, shaper_name, shaper_freq):
         if axis == 'xy':

@@ -21,8 +21,8 @@ void stepcompress_free(struct stepcompress *sc);
 uint32_t stepcompress_get_oid(struct stepcompress *sc);
 int stepcompress_get_step_dir(struct stepcompress *sc);
 int stepcompress_append(struct stepcompress *sc, int sdir
-                        , double print_time, double step_time);
-int stepcompress_commit(struct stepcompress *sc);
+                        , double print_time, double step_time, uint32_t line);
+int stepcompress_commit(struct stepcompress *sc, uint32_t line);
 int stepcompress_reset(struct stepcompress *sc, uint64_t last_step_clock);
 int stepcompress_set_last_position(struct stepcompress *sc, uint64_t clock
                                    , int64_t last_position);

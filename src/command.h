@@ -86,6 +86,10 @@ void command_dispatch(uint8_t *buf, uint_fast8_t msglen);
 void command_send_ack(void);
 int_fast8_t command_find_and_dispatch(uint8_t *buf, uint_fast8_t buf_len
                                       , uint_fast8_t *pop_count);
+uint32_t get_msg_length_error_count(void);
+uint32_t get_msg_dest_error_count(void);
+uint32_t get_msg_sync_error_count(void);
+uint32_t get_msg_crc_error_count(void);
 
 // out/compile_time_request.c (auto generated file)
 extern const struct command_parser command_index[];

@@ -62,7 +62,9 @@ class ArcSupport:
     def _cmd_inner(self, gcmd, clockwise):
         gcodestatus = self.gcode_move.get_status()
         if not gcodestatus['absolute_coordinates']:
-            raise gcmd.error("G2/G3 does not support relative move mode")
+            error = '{"coded": "0003-0529-0000-0010", "msg":"%s"}' % ("G2/G3 does not support relative move mode")
+            raise gcmd.error(error)
+            # raise gcmd.error("G2/G3 does not support relative move mode")
         currentPos = gcodestatus['gcode_position']
 
         # Parse parameters
@@ -72,7 +74,9 @@ class ArcSupport:
                               e=None)
 
         if gcmd.get_float("R", None) is not None:
-            raise gcmd.error("G2/G3 does not support R moves")
+            error = '{"coded": "0003-0529-0000-0011", "msg":"%s"}' % ("G2/G3 does not support R moves")
+            raise gcmd.error(error)
+            # raise gcmd.error("G2/G3 does not support R moves")
 
         # determine the plane coordinates and the helical axis
         asPlanar = [ gcmd.get_float(a, 0.) for i,a in enumerate('IJ') ]
@@ -85,7 +89,9 @@ class ArcSupport:
             axes = (Y_AXIS, Z_AXIS, X_AXIS)
 
         if not (asPlanar[0] or asPlanar[1]):
-            raise gcmd.error("G2/G3 requires IJ, IK or JK parameters")
+            error = '{"coded": "0003-0529-0000-0012", "msg":"%s"}' % ("G2/G3 requires IJ, IK or JK parameters")
+            raise gcmd.error(error)
+            # raise gcmd.error("G2/G3 requires IJ, IK or JK parameters")
 
         asE = gcmd.get_float("E", None)
         asF = gcmd.get_float("F", None)

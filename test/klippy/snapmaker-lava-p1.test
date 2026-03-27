@@ -1,0 +1,8 @@
+DICTIONARY klipper.dict E0=klipper.dict E1=klipper.dict
+CONFIG snapmaker-lava-p1.cfg
+
+# run command: scripts/test_klippy.py -d out test/klippy/snapmaker-lava-p1.test -k
+
+T0
+T1
+T0

@@ -76,11 +76,12 @@ class LIS2DW:
         self.spi.spi_send([reg, val & 0xFF], minclock=minclock)
         stored_val = self.read_reg(reg)
         if stored_val != val:
-            raise self.printer.command_error(
-                    "Failed to set LIS2DW register [0x%x] to 0x%x: got 0x%x. "
-                    "This is generally indicative of connection problems "
-                    "(e.g. faulty wiring) or a faulty lis2dw chip." % (
-                        reg, val, stored_val))
+            msg = ("Failed to set LIS2DW register [0x%x] to 0x%x: got 0x%x. "
+                  "This is generally indicative of connection problems "
+                  "(e.g. faulty wiring) or a faulty lis2dw chip." % (
+                      reg, val, stored_val))
+            err_msg = '{"coded": "0003-0522-0000-0009", "oneshot": 1, "msg":"%s"}' % msg
+            raise self.printer.command_error(err_msg)
     def start_internal_client(self):
         aqh = adxl345.AccelQueryHelper(self.printer)
         self.batch_bulk.add_client(aqh.handle_batch)
@@ -103,11 +104,12 @@ class LIS2DW:
         dev_id = self.read_reg(REG_LIS2DW_WHO_AM_I_ADDR)
         logging.info("lis2dw_dev_id: %x", dev_id)
         if dev_id != LIS2DW_DEV_ID:
-            raise self.printer.command_error(
-                "Invalid lis2dw id (got %x vs %x).\n"
-                "This is generally indicative of connection problems\n"
-                "(e.g. faulty wiring) or a faulty lis2dw chip."
-                % (dev_id, LIS2DW_DEV_ID))
+            msg = ("Invalid lis2dw id (got %x vs %x). "
+                  "Possible causes: connection problems (faulty wiring) "
+                  "or a faulty lis2dw chip."
+                  % (dev_id, LIS2DW_DEV_ID))
+            err_msg = '{"coded": "0003-0522-0000-0010", "oneshot": 1, "msg":"%s"}' % msg
+            raise self.printer.command_error(err_msg)
         # Setup chip in requested query rate
         # ODR/2, +-16g, low-pass filter, Low-noise abled
         self.set_reg(REG_LIS2DW_CTRL_REG6_ADDR, 0x34)

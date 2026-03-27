@@ -22,6 +22,7 @@ struct pull_queue_message {
     uint8_t msg[MESSAGE_MAX];
     int len;
     double sent_time, receive_time;
+    uint64_t min_clock, req_clock;
     uint64_t notify_id;
 };
 

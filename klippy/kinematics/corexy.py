@@ -33,6 +33,7 @@ class CoreXYKinematics:
         ranges = [r.get_range() for r in self.rails]
         self.axes_min = toolhead.Coord(*[r[0] for r in ranges], e=0.)
         self.axes_max = toolhead.Coord(*[r[1] for r in ranges], e=0.)
+        self.ignore_check_move_limit = False
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
     def calc_position(self, stepper_positions):
@@ -46,6 +47,10 @@ class CoreXYKinematics:
     def note_z_not_homed(self):
         # Helper for Safe Z Home
         self.limits[2] = (1.0, -1.0)
+    def note_x_not_homed(self):
+        self.limits[0] = (1.0, -1.0)
+    def note_y_not_homed(self):
+        self.limits[1] = (1.0, -1.0)
     def home(self, homing_state):
         # Each axis is homed independently and in order
         for axis in homing_state.get_axes():
@@ -66,24 +71,27 @@ class CoreXYKinematics:
         self.limits = [(1.0, -1.0)] * 3
     def _check_endstops(self, move):
         end_pos = move.end_pos
+        axis_names = 'XYZ'
         for i in (0, 1, 2):
             if (move.axes_d[i]
                 and (end_pos[i] < self.limits[i][0]
                      or end_pos[i] > self.limits[i][1])):
                 if self.limits[i][0] > self.limits[i][1]:
-                    raise move.move_error("Must home axis first")
-                raise move.move_error()
+                    raise move.move_error(f"Must home {axis_names[i]} axis first")
+                raise move.move_error(f"Move out of range on {axis_names[i]} axis")
     def check_move(self, move):
-        limits = self.limits
-        xpos, ypos = move.end_pos[:2]
-        if (xpos < limits[0][0] or xpos > limits[0][1]
-            or ypos < limits[1][0] or ypos > limits[1][1]):
-            self._check_endstops(move)
+        if not self.ignore_check_move_limit:
+            limits = self.limits
+            xpos, ypos = move.end_pos[:2]
+            if (xpos < limits[0][0] or xpos > limits[0][1]
+                or ypos < limits[1][0] or ypos > limits[1][1]):
+                self._check_endstops(move)
         if not move.axes_d[2]:
             # Normal XY move - use defaults
             return
         # Move with Z - update velocity and accel for slower Z axis
-        self._check_endstops(move)
+        if not self.ignore_check_move_limit:
+            self._check_endstops(move)
         z_ratio = move.move_d / abs(move.axes_d[2])
         move.limit_speed(
             self.max_z_velocity * z_ratio, self.max_z_accel * z_ratio)
@@ -94,6 +102,10 @@ class CoreXYKinematics:
             'axis_minimum': self.axes_min,
             'axis_maximum': self.axes_max,
         }
+
+    def set_ignore_check_move_limit(self, enable):
+        # WARNING: Enabling this will disable the detection of XYZ movement coordinates. USE WITH CAUTION!!!
+        self.ignore_check_move_limit = not not enable
 
 def load_kinematics(toolhead, config):
     return CoreXYKinematics(toolhead, config)

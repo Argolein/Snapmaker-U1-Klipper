@@ -222,5 +222,16 @@ def get_git_version(from_file=True):
         logging.debug("Exception on run: %s", traceback.format_exc())
 
     if from_file:
-        git_info["version"] = get_version_from_file(klippy_src)
+        git_info["version"] = get_full_firmware_version()
     return git_info
+
+def get_full_firmware_version():
+    # get full firmware version from /etc/FULLVERSION
+    try:
+        with open("/etc/FULLVERSION", "r") as f:
+            fullver = f.read().strip()
+        logging.info("Full firmware version: %s", fullver)
+        return fullver
+    except Exception as e:
+        logging.error("Error getting full firmware version: %s", e)
+    return "?"

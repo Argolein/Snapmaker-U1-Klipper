@@ -98,7 +98,7 @@ console_setup(char *name)
         report_errno("symlink", ret);
         return -1;
     }
-    ret = chmod(tname, 0660);
+    ret = chmod(tname, 0666);
     if (ret) {
         report_errno("chmod", ret);
         return -1;

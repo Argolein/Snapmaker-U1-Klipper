@@ -36,15 +36,18 @@ class StepperPosition:
 
 # Implementation of homing/probing moves
 class HomingMove:
-    def __init__(self, printer, endstops, toolhead=None):
+    def __init__(self, printer, endstops, toolhead=None, sim_stall_set_endstops=None):
         self.printer = printer
         self.endstops = endstops
+        self.sim_stall_set_endstops = sim_stall_set_endstops if sim_stall_set_endstops is not None else []
         if toolhead is None:
             toolhead = printer.lookup_object('toolhead')
         self.toolhead = toolhead
         self.stepper_positions = []
     def get_mcu_endstops(self):
         return [es for es, name in self.endstops]
+    def get_mcu_sim_stall_set_endstops(self):
+        return [es for es, name in self.sim_stall_set_endstops]
     def _calc_endstop_rate(self, mcu_endstop, movepos, speed):
         startpos = self.toolhead.get_position()
         axes_d = [mp - sp for mp, sp in zip(movepos, startpos)]
@@ -67,6 +70,7 @@ class HomingMove:
         return list(kin.calc_position(kin_spos))[:3] + thpos[3:]
     def homing_move(self, movepos, speed, probe_pos=False,
                     triggered=True, check_triggered=True):
+        self.homing_speed = speed
         # Notify start of homing/probing move
         self.printer.send_event("homing:homing_move_begin", self)
         # Note start location
@@ -93,7 +97,9 @@ class HomingMove:
         try:
             self.toolhead.drip_move(movepos, speed, all_endstop_trigger)
         except self.printer.command_error as e:
-            error = "Error during homing move: %s" % (str(e),)
+            str_err = self.printer.extract_coded_message_field(str(e))
+            index = {'x': 0, 'y': 1, 'z': 2, 'probe': 3}.get(name, 255)
+            error = '{"coded": "0003-0528-%4d-0002", "msg":"%s", "action": "cancel"}' % (index, "Error during homing move %s: %s" % (name, str_err,))
         # Wait for endstops to trigger
         trigger_times = {}
         move_end_print_time = self.toolhead.get_last_move_time()
@@ -102,12 +108,15 @@ class HomingMove:
                 trigger_time = mcu_endstop.home_wait(move_end_print_time)
             except self.printer.command_error as e:
                 if error is None:
-                    error = "Error during homing %s: %s" % (name, str(e))
+                    str_err = self.printer.extract_coded_message_field(str(e))
+                    index = {'x': 0, 'y': 1, 'z': 2, 'probe': 3}.get(name, 255)
+                    error = '{"coded": "0003-0528-%4d-0003", "msg":"%s", "action": "cancel"}' % (index, "Error during homing %s: %s" % (name, str_err))
                 continue
             if trigger_time > 0.:
                 trigger_times[name] = trigger_time
             elif check_triggered and error is None:
-                error = "No trigger on %s after full movement" % (name,)
+                index = {'x': 0, 'y': 1, 'z': 2, 'probe': 3}.get(name, 255)
+                error = '{"coded": "0003-0528-%4d-0004", "msg":"%s", "action": "cancel"}' % (index, "No trigger on %s after full movement" % (name,))
         # Determine stepper halt positions
         self.toolhead.flush_step_generation()
         for sp in self.stepper_positions:
@@ -147,6 +156,16 @@ class HomingMove:
             if sp.start_pos == sp.trig_pos:
                 return sp.endstop_name
         return None
+    def check_all_stepper_no_movement(self):
+        if self.printer.get_start_args().get('debuginput') is not None:
+            return None
+        endstop_name = None
+        for sp in self.stepper_positions:
+            if sp.start_pos != sp.trig_pos:
+                endstop_name = None
+                break
+            endstop_name = sp.endstop_name
+        return endstop_name
 
 # State tracking of homing requests
 class Homing:
@@ -156,6 +175,7 @@ class Homing:
         self.changed_axes = []
         self.trigger_mcu_pos = {}
         self.adjust_pos = {}
+        self.gcode = self.printer.lookup_object('gcode')
     def set_axes(self, axes):
         self.changed_axes = axes
     def get_axes(self):
@@ -183,34 +203,84 @@ class Homing:
         self.toolhead.set_position(startpos, homing_axes=homing_axes)
         # Perform first home
         endstops = [es for rail in rails for es in rail.get_endstops()]
+        sim_stall_set_endstops = None
         hi = rails[0].get_homing_info()
-        hmove = HomingMove(self.printer, endstops)
+        if self.toolhead.get_kinematics_name() == 'corexy':
+            corexy_rails = self.toolhead.get_kinematics().rails
+            primary_rail_name = rails[0].get_name()
+            if primary_rail_name == 'stepper_x':
+                sim_stall_set_endstops = [es for es in corexy_rails[1].get_endstops()]
+            elif primary_rail_name == 'stepper_y':
+                sim_stall_set_endstops = [es for es in corexy_rails[0].get_endstops()]
+
+        # Stop waiting before homing
+        if hi.homing_before_delay:
+            self.toolhead.dwell(hi.homing_before_delay)
+            self.toolhead.wait_moves()
+        hmove = HomingMove(self.printer, endstops, sim_stall_set_endstops=sim_stall_set_endstops)
         hmove.homing_move(homepos, hi.speed)
         # Perform second home
         if hi.retract_dist:
-            # Retract
-            startpos = self._fill_coord(forcepos)
-            homepos = self._fill_coord(movepos)
-            axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
-            move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
-            retract_r = min(1., hi.retract_dist / move_d)
-            retractpos = [hp - ad * retract_r
-                          for hp, ad in zip(homepos, axes_d)]
-            self.toolhead.move(retractpos, hi.retract_speed)
-            # Home again
-            startpos = [rp - ad * retract_r
-                        for rp, ad in zip(retractpos, axes_d)]
-            self.toolhead.set_position(startpos)
-            hmove = HomingMove(self.printer, endstops)
-            hmove.homing_move(homepos, hi.second_homing_speed)
-            if hmove.check_no_movement() is not None:
-                raise self.printer.command_error(
-                    "Endstop %s still triggered after retract"
-                    % (hmove.check_no_movement(),))
+            trigger_mcu_stpes = []
+            cal_stepper = rails[0].get_steppers()[0]
+            rotation_dist, steps_per_rotation = cal_stepper.get_rotation_distance()
+            step_dit = rotation_dist / steps_per_rotation
+            self.toolhead.flush_step_generation()
+            trigger_mcu_pos = {sp.stepper_name: sp.trig_pos
+                        for sp in hmove.stepper_positions}
+            trigger_mcu_stpes.append(trigger_mcu_pos[cal_stepper.get_name()])
+            homing_cnt, second_homing_first, homing_success = 0, True, True
+            while ((homing_cnt < hi.homing_tolerance_retries and hi.homing_tolerance is not None) or second_homing_first):
+                second_homing_first = False
+                # Retract
+                startpos = self._fill_coord(forcepos)
+                homepos = self._fill_coord(movepos)
+                axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
+                move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
+                retract_r = min(1., hi.retract_dist / move_d)
+                retractpos = [hp - ad * retract_r
+                            for hp, ad in zip(homepos, axes_d)]
+                self.toolhead.move(retractpos, hi.retract_speed)
+                if hi.second_homing_before_delay:
+                    self.toolhead.dwell(hi.second_homing_before_delay)
+                    self.toolhead.wait_moves()
+                # Home again
+                startpos = [rp - ad * retract_r
+                            for rp, ad in zip(retractpos, axes_d)]
+                self.toolhead.set_position(startpos)
+                hmove = HomingMove(self.printer, endstops, sim_stall_set_endstops=sim_stall_set_endstops)
+                hmove.homing_move(homepos, hi.second_homing_speed)
+                if hmove.check_no_movement() is not None:
+                    error = '{"coded": "0003-0528-0000-0005", "msg":"%s"}' % ("Endstop %s still triggered after retract" % (hmove.check_no_movement(),))
+                    raise self.printer.command_error(error)
+                if hi.homing_tolerance is not None:
+                    self.toolhead.flush_step_generation()
+                    trigger_mcu_pos = {sp.stepper_name: sp.trig_pos
+                                for sp in hmove.stepper_positions}
+                    trigger_mcu_stpes.append(trigger_mcu_pos[cal_stepper.get_name()])
+                    if len(trigger_mcu_stpes) >= 2:
+                        # Compare homing trigger tolerances
+                        distance_diff = abs(max(trigger_mcu_stpes) - min(trigger_mcu_stpes))*step_dit
+                        if distance_diff > hi.homing_tolerance:
+                            self.gcode.respond_info(
+                                "rounds: {}, trig_pos max: {}, trig_pos min: {}, distance_diff: {} homing_tolerance: {}, trigger_mcu_stpes: {}".format(
+                                homing_cnt, max(trigger_mcu_stpes), min(trigger_mcu_stpes), distance_diff, hi.homing_tolerance, trigger_mcu_stpes))
+                            homing_cnt += 1
+                            if homing_cnt >= hi.homing_tolerance_retries:
+                                homing_success = False
+                            trigger_mcu_stpes = []
+                        else:
+                            if len(trigger_mcu_stpes) >= hi.homing_samples:
+                                break
+            if homing_success == False:
+                error = '{"coded": "0003-0528-0000-0006", "msg":"%s"}' % ("Homing trigger distance over tolerance")
+                raise self.printer.command_error(error)
+
         # Signal home operation complete
         self.toolhead.flush_step_generation()
         self.trigger_mcu_pos = {sp.stepper_name: sp.trig_pos
                                 for sp in hmove.stepper_positions}
+        self.gcode.respond_info("trigger_mcu_pos: {}".format(self.trigger_mcu_pos))
         self.adjust_pos = {}
         self.printer.send_event("homing:home_rails_end", self, rails)
         if any(self.adjust_pos.values()):
@@ -224,6 +294,13 @@ class Homing:
             for axis in homing_axes:
                 homepos[axis] = newpos[axis]
             self.toolhead.set_position(homepos)
+
+        if hi.homing_backoff_dist:
+            self.toolhead.wait_moves()
+            axis = homing_axes[0]
+            pos = self.toolhead.get_position()
+            pos[axis] = pos[axis] + hi.homing_backoff_dist
+            self.toolhead.manual_move(pos, hi.retract_speed)
 
 class PrinterHoming:
     def __init__(self, config):
@@ -239,8 +316,8 @@ class PrinterHoming:
                               check_triggered=check_triggered)
         except self.printer.command_error:
             if self.printer.is_shutdown():
-                raise self.printer.command_error(
-                    "Homing failed due to printer shutdown")
+                error = '{"coded": "0003-0528-0000-0007", "msg":"%s"}' % ("Homing failed due to printer shutdown")
+                raise self.printer.command_error(error)
             raise
     def probing_move(self, mcu_probe, pos, speed):
         endstops = [(mcu_probe, "probe")]
@@ -249,12 +326,24 @@ class PrinterHoming:
             epos = hmove.homing_move(pos, speed, probe_pos=True)
         except self.printer.command_error:
             if self.printer.is_shutdown():
-                raise self.printer.command_error(
-                    "Probing failed due to printer shutdown")
+                error = '{"coded": "0003-0528-0000-0008", "msg":"%s"}' % ("Probing failed due to printer shutdown")
+                raise self.printer.command_error(error)
             raise
-        if hmove.check_no_movement() is not None:
-            raise self.printer.command_error(
-                "Probe triggered prior to movement")
+        # if hmove.check_no_movement() is not None:
+        if hmove.check_all_stepper_no_movement() is not None:
+            error = '{"coded": "0003-0528-0000-0009", "msg":"%s"}' % ("Probe triggered prior to movement")
+            raise self.printer.command_error(error)
+        return epos
+    def probing_coil_move(self, mcu_probe, pos, speed):
+        endstops = [(mcu_probe, "probe")]
+        hmove = HomingMove(self.printer, endstops)
+        try:
+            epos = hmove.homing_move(pos, speed, probe_pos=True)
+        except self.printer.command_error:
+            if self.printer.is_shutdown():
+                error = '{"coded": "0003-0528-0000-0008", "msg":"%s"}' % ("Probing failed due to printer shutdown")
+                raise self.printer.command_error(error)
+            raise
         return epos
     def cmd_G28(self, gcmd):
         # Move to origin
@@ -271,9 +360,24 @@ class PrinterHoming:
             kin.home(homing_state)
         except self.printer.command_error:
             if self.printer.is_shutdown():
-                raise self.printer.command_error(
-                    "Homing failed due to printer shutdown")
-            self.printer.lookup_object('stepper_enable').motor_off()
+                error = '{"coded": "0003-0528-0000-0007", "msg":"%s"}' % ("Homing failed due to printer shutdown")
+                raise self.printer.command_error(error)
+            can_motor_off = True
+            if 2 not in axes:
+                if ("z" in kin.get_status(0)['homed_axes']):
+                    machine_state_manager = self.printer.lookup_object('machine_state_manager', None)
+                    if machine_state_manager is not None:
+                        cur_sta = machine_state_manager.get_status()
+                        if str(cur_sta["main_state"]) == "PRINTING":
+                            can_motor_off = False
+
+            if can_motor_off:
+                self.printer.lookup_object('stepper_enable').motor_off()
+            else:
+                if hasattr(kin, "note_x_not_homed"):
+                    kin.note_x_not_homed()
+                if hasattr(kin, "note_y_not_homed"):
+                    kin.note_y_not_homed()
             raise
 
 def load_config(config):

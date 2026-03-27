@@ -94,7 +94,7 @@ defs_trapq = """
         , double accel_t, double cruise_t, double decel_t
         , double start_pos_x, double start_pos_y, double start_pos_z
         , double axes_r_x, double axes_r_y, double axes_r_z
-        , double start_v, double cruise_v, double accel);
+        , double start_v, double cruise_v, double accel, uint32_t line);
     void trapq_finalize_moves(struct trapq *tq, double print_time
         , double clear_history_time);
     void trapq_set_position(struct trapq *tq, double print_time
@@ -142,8 +142,9 @@ defs_kin_winch = """
 
 defs_kin_extruder = """
     struct stepper_kinematics *extruder_stepper_alloc(void);
+    void extruder_stepper_free(struct stepper_kinematics *sk);
     void extruder_set_pressure_advance(struct stepper_kinematics *sk
-        , double pressure_advance, double smooth_time);
+        , double print_time, double pressure_advance, double smooth_time);
 """
 
 defs_kin_shaper = """
@@ -170,6 +171,7 @@ defs_serialqueue = """
         uint8_t msg[MESSAGE_MAX];
         int len;
         double sent_time, receive_time;
+        uint64_t min_clock, req_clock;
         uint64_t notify_id;
     };
 
@@ -277,13 +279,13 @@ def get_ffi():
         srcfiles = get_abs_files(srcdir, SOURCE_FILES)
         ofiles = get_abs_files(srcdir, OTHER_FILES)
         destlib = get_abs_files(srcdir, [DEST_LIB])[0]
-        if check_build_code(srcfiles+ofiles+[__file__], destlib):
-            if check_gcc_option(SSE_FLAGS):
-                cmd = "%s %s %s" % (GCC_CMD, SSE_FLAGS, COMPILE_ARGS)
-            else:
-                cmd = "%s %s" % (GCC_CMD, COMPILE_ARGS)
-            logging.info("Building C code module %s", DEST_LIB)
-            do_build_code(cmd % (destlib, ' '.join(srcfiles)))
+        # if check_build_code(srcfiles+ofiles+[__file__], destlib):
+        #     if check_gcc_option(SSE_FLAGS):
+        #         cmd = "%s %s %s" % (GCC_CMD, SSE_FLAGS, COMPILE_ARGS)
+        #     else:
+        #         cmd = "%s %s" % (GCC_CMD, COMPILE_ARGS)
+        #     logging.info("Building C code module %s", DEST_LIB)
+        #     do_build_code(cmd % (destlib, ' '.join(srcfiles)))
         FFI_main = cffi.FFI()
         for d in defs_all:
             FFI_main.cdef(d)

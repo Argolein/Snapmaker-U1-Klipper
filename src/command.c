@@ -14,6 +14,10 @@
 #include "sched.h" // sched_is_shutdown
 
 static uint8_t next_sequence = MESSAGE_DEST;
+static uint32_t error_msg_len = 0;        // Message length errors
+static uint32_t error_msg_dest = 0;          // Destination address errors
+static uint32_t error_msg_sync = 0;          // Message sync byte errors
+static uint32_t error_msg_crc = 0;           // CRC checksum errors
 
 static uint32_t
 command_encode_ptr(void *p)
@@ -29,6 +33,30 @@ command_decode_ptr(uint32_t v)
     if (sizeof(size_t) > sizeof(uint32_t))
         return console_receive_buffer() + v;
     return (void*)(size_t)v;
+}
+
+uint32_t
+get_msg_length_error_count(void)
+{
+    return error_msg_len;
+}
+
+uint32_t
+get_msg_dest_error_count(void)
+{
+    return error_msg_dest;
+}
+
+uint32_t
+get_msg_sync_error_count(void)
+{
+    return error_msg_sync;
+}
+
+uint32_t
+get_msg_crc_error_count(void)
+{
+    return error_msg_crc;
 }
 
 
@@ -273,20 +301,28 @@ command_find_block(uint8_t *buf, uint_fast8_t buf_len, uint_fast8_t *pop_count)
     if (buf_len < MESSAGE_MIN)
         goto need_more_data;
     uint_fast8_t msglen = buf[MESSAGE_POS_LEN];
-    if (msglen < MESSAGE_MIN || msglen > MESSAGE_MAX)
+    if (msglen < MESSAGE_MIN || msglen > MESSAGE_MAX) {
+        error_msg_len++;
         goto error;
+    }
     uint_fast8_t msgseq = buf[MESSAGE_POS_SEQ];
-    if ((msgseq & ~MESSAGE_SEQ_MASK) != MESSAGE_DEST)
+    if ((msgseq & ~MESSAGE_SEQ_MASK) != MESSAGE_DEST) {
+        error_msg_dest++;
         goto error;
+    }
     if (buf_len < msglen)
         goto need_more_data;
-    if (buf[msglen-MESSAGE_TRAILER_SYNC] != MESSAGE_SYNC)
+    if (buf[msglen-MESSAGE_TRAILER_SYNC] != MESSAGE_SYNC) {
+        error_msg_sync++;
         goto error;
+    }
     uint16_t msgcrc = ((buf[msglen-MESSAGE_TRAILER_CRC] << 8)
                        | buf[msglen-MESSAGE_TRAILER_CRC+1]);
     uint16_t crc = crc16_ccitt(buf, msglen-MESSAGE_TRAILER_SIZE);
-    if (crc != msgcrc)
+    if (crc != msgcrc) {
+        error_msg_crc++;
         goto error;
+    }
     sync_state &= ~CF_NEED_VALID;
     *pop_count = msglen;
     // Check sequence number

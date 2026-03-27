@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from . import fan
+import logging
 
 class PrinterFanGeneric:
     cmd_SET_FAN_SPEED_help = "Sets the speed of a fan"
@@ -17,7 +18,20 @@ class PrinterFanGeneric:
                                    self.fan_name,
                                    self.cmd_SET_FAN_SPEED,
                                    desc=self.cmd_SET_FAN_SPEED_help)
-
+        wh = self.printer.lookup_object('webhooks')
+        wh.register_mux_endpoint("control/generic_fan", 'fan', self.fan_name, self._handle_control_generic_fan)
+    def _handle_control_generic_fan(self, web_request):
+        try:
+            speed = web_request.get_int('S', 0)
+            if speed > 100:
+                speed = 100
+            if speed < 0:
+                speed = 0
+            self.fan.set_speed_from_command(speed / 100.0)
+            web_request.send({'state': 'success'})
+        except Exception as e:
+            logging.error(f'failed to set fan: {str(e)}')
+            web_request.send({'state': 'error', 'message': str(e)})
     def get_status(self, eventtime):
         return self.fan.get_status(eventtime)
     def cmd_SET_FAN_SPEED(self, gcmd):

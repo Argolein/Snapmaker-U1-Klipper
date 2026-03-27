@@ -27,6 +27,23 @@ class LEDHelper:
         gcode = self.printer.lookup_object('gcode')
         gcode.register_mux_command("SET_LED", "LED", name, self.cmd_SET_LED,
                                    desc=self.cmd_SET_LED_help)
+        wh = self.printer.lookup_object('webhooks')
+        wh.register_mux_endpoint("control/led", 'led', name, self._handle_control_led)
+    def _handle_control_led(self, web_request):
+        try:
+            red = web_request.get_float('red', 0.)
+            green = web_request.get_float('green', 0.)
+            blue = web_request.get_float('blue', 0.)
+            white = web_request.get_float('white', 0.)
+            index = web_request.get_int('index', None)
+            transmit = web_request.get_int('transmit', 1)
+            sync = web_request.get_int('SYNC', 0)
+            color = (red, green, blue, white)
+            self._set_led(color, index, transmit, sync)
+            web_request.send({'state': 'success'})
+        except Exception as e:
+            logging.error(f'failed to control led: {str(e)}')
+            web_request.send({'state': 'error', 'message': str(e)})
     def get_led_count(self):
         return self.led_count
     def set_color(self, index, color):
@@ -49,17 +66,7 @@ class LEDHelper:
             self.update_func(self.led_state, print_time)
         except self.printer.command_error as e:
             logging.exception("led update transmit error")
-    cmd_SET_LED_help = "Set the color of an LED"
-    def cmd_SET_LED(self, gcmd):
-        # Parse parameters
-        red = gcmd.get_float('RED', 0., minval=0., maxval=1.)
-        green = gcmd.get_float('GREEN', 0., minval=0., maxval=1.)
-        blue = gcmd.get_float('BLUE', 0., minval=0., maxval=1.)
-        white = gcmd.get_float('WHITE', 0., minval=0., maxval=1.)
-        index = gcmd.get_int('INDEX', None, minval=1, maxval=self.led_count)
-        transmit = gcmd.get_int('TRANSMIT', 1)
-        sync = gcmd.get_int('SYNC', 1)
-        color = (red, green, blue, white)
+    def _set_led(self, color, index, transmit, sync):
         # Update and transmit data
         def lookahead_bgfunc(print_time):
             self.set_color(index, color)
@@ -72,6 +79,18 @@ class LEDHelper:
         else:
             #Send update now (so as not to wake toolhead and reset idle_timeout)
             lookahead_bgfunc(None)
+    cmd_SET_LED_help = "Set the color of an LED"
+    def cmd_SET_LED(self, gcmd):
+        # Parse parameters
+        red = gcmd.get_float('RED', 0., minval=0., maxval=1.)
+        green = gcmd.get_float('GREEN', 0., minval=0., maxval=1.)
+        blue = gcmd.get_float('BLUE', 0., minval=0., maxval=1.)
+        white = gcmd.get_float('WHITE', 0., minval=0., maxval=1.)
+        index = gcmd.get_int('INDEX', None, minval=1, maxval=self.led_count)
+        transmit = gcmd.get_int('TRANSMIT', 1)
+        sync = gcmd.get_int('SYNC', 1)
+        color = (red, green, blue, white)
+        self._set_led(color, index, transmit, sync)
     def get_status(self, eventtime=None):
         return {'color_data': self.led_state}
 
@@ -179,7 +198,7 @@ class PrinterLED:
                 self._activate_template(led_helper, i+1, template, lparams)
         self._activate_timer()
 
-PIN_MIN_TIME = 0.100
+PIN_MIN_TIME = 0.200
 MAX_SCHEDULE_TIME = 5.0
 
 # Handler for PWM controlled LEDs

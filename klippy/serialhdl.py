@@ -12,9 +12,10 @@ class error(Exception):
     pass
 
 class SerialReader:
-    def __init__(self, reactor, warn_prefix=""):
+    def __init__(self, reactor, warn_prefix="", mcu=None):
         self.reactor = reactor
         self.warn_prefix = warn_prefix
+        self._mcu = mcu
         # Serial port
         self.serial_dev = None
         self.msgparser = msgproto.MessageParser(warn_prefix=warn_prefix)
@@ -268,6 +269,12 @@ class SerialReader:
         out = []
         out.append("Dumping serial stats: %s" % (
             self.stats(self.reactor.monotonic()),))
+
+        def clock_to_systime(clock):
+            if clock == 0 or self._mcu is None:
+                return 0.0
+            return self._mcu.estimate_clock_systime(clock)
+
         sdata = self.ffi_main.new('struct pull_queue_message[1024]')
         rdata = self.ffi_main.new('struct pull_queue_message[1024]')
         scount = self.ffi_lib.serialqueue_extract_old(self.serialqueue, 1,
@@ -278,8 +285,10 @@ class SerialReader:
         for i in range(scount):
             msg = sdata[i]
             cmds = self.msgparser.dump(msg.msg[0:msg.len])
-            out.append("Sent %d %f %f %d: %s" % (
-                i, msg.receive_time, msg.sent_time, msg.len, ', '.join(cmds)))
+            min_time = clock_to_systime(msg.min_clock)
+            req_time = clock_to_systime(msg.req_clock)
+            out.append("Sent %d %f %f min_t=%f req_t=%f %d: %s" % (
+                i, msg.receive_time, msg.sent_time, min_time, req_time, msg.len, ', '.join(cmds)))
         out.append("Dumping receive queue %d messages" % (rcount,))
         for i in range(rcount):
             msg = rdata[i]
@@ -297,6 +306,24 @@ class SerialReader:
     def handle_output(self, params):
         logging.info("%s%s: %s", self.warn_prefix,
                      params['#name'], params['#msg'])
+        msg = params.get('#msg', '')
+        if msg.startswith('Timer too close: ') and self._mcu is not None:
+            content = msg[len('Timer too close: '):].strip()
+            parsed = dict(item.strip().split('=', 1) for item in content.split(',') if '=' in item)
+            if all(k in parsed for k in ('waketime', 'timer_read_time')):
+                w, t = parsed['waketime'], parsed['timer_read_time']
+                w, t = int(w), int(t)
+                wclock = self._mcu.clock32_to_clock64(w)
+                tclock = self._mcu.clock32_to_clock64(t)
+                wsysclock = self._mcu.estimate_clock_systime(wclock)
+                tsysclock = self._mcu.estimate_clock_systime(tclock)
+                logging.info("{}Timer too close, wsysclock: {}, tsysclock: {}".format(self.warn_prefix, wsysclock, tsysclock))
+
+        if 'Power loss info saved' == msg and self._mcu is not None:
+            mcu_index = {'mcu': 0, 'e0': 1, 'e1': 2, 'e2': 3, 'e3': 4}.get(self._mcu._name, 255)
+            coded = "0003-0522-%4d-0017" % mcu_index
+            self._mcu.get_printer().raise_structured_code_exception(coded, msg, 0, 0)
+
     def handle_default(self, params):
         logging.warning("%sgot %s", self.warn_prefix, params)
 

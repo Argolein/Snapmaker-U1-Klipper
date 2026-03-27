@@ -228,6 +228,15 @@ class PrinterMotionReport:
         self.last_status['live_velocity'] = xyzvelocity
         self.last_status['live_extruder_velocity'] = evelocity
         return self.last_status
+    
+    def start_trapq_client(self, trapq_name, client):
+        if self.trapqs.get(trapq_name) is None:
+            raise f'no trapq {trapq_name} in motion report'
+        if self.trapqs.get(trapq_name) is None:
+            raise f'invalid trapq name: {trapq_name}'
+        logging.info(f"create a trapq client for axis[{trapq_name}]")
+        trapq =  self.trapqs[trapq_name]
+        trapq.batch_bulk.add_client(client)
 
 def load_config(config):
     return PrinterMotionReport(config)

@@ -4,9 +4,24 @@
 # Copyright (C) 2020  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import logging, copy, os
 import collections
 import chelper
 from . import shaper_defs
+
+SHAPER_CONFIG_FILE                  =   "input_shaper.json"
+DEFAULT_SHAPER_CONFIG = {
+    'axis_x': {
+        'type': 'mzv',
+        'freq': 54,
+        'damping_ratio': 0.1
+    },
+    'axis_y': {
+        'type': 'mzv',
+        'freq': 47.5,
+        'damping_ratio': 0.1
+    }
+}
 
 class InputShaperParams:
     def __init__(self, axis, config):
@@ -92,6 +107,28 @@ class InputShaper:
         self.toolhead = None
         self.shapers = [AxisInputShaper('x', config),
                         AxisInputShaper('y', config)]
+        self.shaper_freq_x_min = config.getfloat('shaper_freq_x_min', 5)
+        self.shaper_freq_x_max = config.getfloat('shaper_freq_x_max', 100)
+        self.shaper_freq_x_default = config.getfloat('shaper_freq_x', 54)
+        self.shaper_freq_y_min = config.getfloat('shaper_freq_y_min', 5)
+        self.shaper_freq_y_max = config.getfloat('shaper_freq_y_max', 100)
+        self.shaper_freq_y_default = config.getfloat('shaper_freq_y', 47.5)
+
+        # Use the values defined by the user in printer.cfg as default values.
+        DEFAULT_SHAPER_CONFIG['axis_x']['type'] = self.shapers[0].params.shaper_type
+        DEFAULT_SHAPER_CONFIG['axis_x']['freq'] = self.shapers[0].params.shaper_freq
+        DEFAULT_SHAPER_CONFIG['axis_x']['damping_ratio'] = self.shapers[0].params.damping_ratio
+        DEFAULT_SHAPER_CONFIG['axis_y']['type'] = self.shapers[1].params.shaper_type
+        DEFAULT_SHAPER_CONFIG['axis_y']['freq'] = self.shapers[1].params.shaper_freq
+        DEFAULT_SHAPER_CONFIG['axis_y']['damping_ratio'] = self.shapers[1].params.damping_ratio
+        config_dir = self.printer.get_snapmaker_config_dir()
+        config_name = SHAPER_CONFIG_FILE
+        self._config_path = os.path.join(config_dir, config_name)
+        self._config = self.printer.load_snapmaker_config_file(
+                            self._config_path,
+                            DEFAULT_SHAPER_CONFIG,
+                            create_if_not_exist=True)
+
         self.input_shaper_stepper_kinematics = []
         self.orig_stepper_kinematics = []
         # Register gcode commands
@@ -104,7 +141,26 @@ class InputShaper:
     def connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
         # Configure initial values
+        self.shapers[0].params.shaper_type = self._config['axis_x']['type']
+        self.shapers[0].params.shaper_freq = self._config['axis_x']['freq']
+        self.shapers[0].params.damping_ratio = self._config['axis_x']['damping_ratio']
+        self.shapers[1].params.shaper_type = self._config['axis_y']['type']
+        self.shapers[1].params.shaper_freq = self._config['axis_y']['freq']
+        self.shapers[1].params.damping_ratio = self._config['axis_y']['damping_ratio']
         self._update_input_shaping(error=self.printer.config_error)
+
+    def _save_input_shaper_params(self):
+        self._config['axis_x']['type'] = self.shapers[0].params.shaper_type
+        self._config['axis_x']['freq'] = self.shapers[0].params.shaper_freq
+        self._config['axis_x']['damping_ratio'] = self.shapers[0].params.damping_ratio
+        self._config['axis_y']['type'] = self.shapers[1].params.shaper_type
+        self._config['axis_y']['freq'] = self.shapers[1].params.shaper_freq
+        self._config['axis_y']['damping_ratio'] = self.shapers[1].params.damping_ratio
+        ret = self.printer.update_snapmaker_config_file(self._config_path, self._config, DEFAULT_SHAPER_CONFIG)
+        if not ret:
+            logging.error("save input_shaper config failed!")
+        return ret
+
     def _get_input_shaper_stepper_kinematics(self, stepper):
         # Lookup stepper kinematics
         sk = stepper.get_stepper_kinematics()
@@ -162,6 +218,7 @@ class InputShaper:
             for shaper in self.shapers:
                 shaper.update(gcmd)
             self._update_input_shaping()
+            self._save_input_shaper_params()
         for shaper in self.shapers:
             shaper.report(gcmd)
 

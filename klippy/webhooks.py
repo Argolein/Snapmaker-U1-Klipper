@@ -187,6 +187,7 @@ class ClientConnection:
         self.blocking_count = 0
         self.set_client_info("?", "New connection")
         self.request_log = collections.deque([], REQUEST_LOG_SIZE)
+        self.exception_manager = self.printer.lookup_object('exception_manager', None)
 
     def dump_request_log(self):
         out = []
@@ -251,11 +252,16 @@ class ClientConnection:
                 lambda e, s=self, wr=web_request: s._process_request(wr))
 
     def _process_request(self, web_request):
+        method = None
         try:
+            method = web_request.get_method()
             func = self.webhooks.get_callback(web_request.get_method())
             func(web_request)
         except self.printer.command_error as e:
-            web_request.set_error(WebRequestError(str(e)))
+            str_err = self.printer.extract_coded_message_field(str(e))
+            web_request.set_error(WebRequestError(str_err))
+            if method != "gcode/script":
+                self.printer.raise_coded_exception(e)
         except Exception as e:
             msg = ("Internal Error on WebRequest: %s"
                    % (web_request.get_method()))
@@ -369,6 +375,9 @@ class WebHooks:
 
     def _handle_estop_request(self, web_request):
         self.printer.invoke_shutdown("Shutdown due to webhooks request")
+        # shutdown_msg = '{"coded":"%s", "oneshot": %d, "msg":"%s"}' % ("0003-0522-0001-0002", 0, "Shutdown due to webhooks request".replace('"',"'"))
+        # shutdown_msg = '{"code": %d, "index": %d, "oneshot": %d, "msg":"%s"}' % (9, 5, 0, "Shutdown due to webhooks request".replace('"',"'"))
+        # self.printer.invoke_shutdown(shutdown_msg)
 
     def _handle_rpc_registration(self, web_request):
         template = web_request.get_dict('response_template')
@@ -395,6 +404,9 @@ class WebHooks:
 
     def stats(self, eventtime):
         return self.sconn.stats(eventtime)
+
+    def has_remote_method(self, method):
+        return method in self._remote_methods
 
     def call_remote_method(self, method, **kwargs):
         if method not in self._remote_methods:

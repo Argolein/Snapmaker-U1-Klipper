@@ -9,6 +9,21 @@ import chelper
 class error(Exception):
     pass
 
+######################################################################
+# Power_loss need save steppers
+######################################################################
+power_loss_need_save_steppers = ['stepper_x', 'stepper_y', 'stepper_z', 'extruder']
+def get_stepper_type_and_index(stepper):
+    if not isinstance(stepper, str):
+        return (0xFF, 0xFF)
+
+    for idx, name in enumerate(power_loss_need_save_steppers):
+        if stepper.startswith(name):
+            remaining = stepper[len(name):]
+            if remaining.isdigit() or remaining == '':
+                num = int(remaining) if remaining else 0
+                return (idx, num)
+    return (0xFF, 0xFF)
 
 ######################################################################
 # Steppers
@@ -32,6 +47,7 @@ class MCU_stepper:
         self._mcu.register_config_callback(self._build_config)
         self._step_pin = step_pin_params['pin']
         self._invert_step = step_pin_params['invert']
+        self._stepper_type, self._stepper_index = get_stepper_type_and_index(self._name)
         if dir_pin_params['chip'] is not self._mcu:
             raise self._mcu.get_printer().config_error(
                 "Stepper dir pin must be on same mcu as step pin")
@@ -85,12 +101,12 @@ class MCU_stepper:
         step_pulse_ticks = self._mcu.seconds_to_clock(self._step_pulse_duration)
         self._mcu.add_config_cmd(
             "config_stepper oid=%d step_pin=%s dir_pin=%s invert_step=%d"
-            " step_pulse_ticks=%u" % (self._oid, self._step_pin, self._dir_pin,
-                                      invert_step, step_pulse_ticks))
+            " step_pulse_ticks=%u type=%u index=%u" % (self._oid, self._step_pin, self._dir_pin,
+                                      invert_step, step_pulse_ticks, self._stepper_type, self._stepper_index))
         self._mcu.add_config_cmd("reset_step_clock oid=%d clock=0"
                                  % (self._oid,), on_restart=True)
         step_cmd_tag = self._mcu.lookup_command(
-            "queue_step oid=%c interval=%u count=%hu add=%hi").get_command_tag()
+            "queue_step oid=%c interval=%u count=%hu add=%hi line=%u").get_command_tag()
         dir_cmd_tag = self._mcu.lookup_command(
             "set_next_step_dir oid=%c dir=%c").get_command_tag()
         self._reset_cmd_tag = self._mcu.lookup_command(
@@ -337,6 +353,21 @@ class PrinterRail:
             'homing_retract_speed', self.homing_speed, above=0.)
         self.homing_retract_dist = config.getfloat(
             'homing_retract_dist', 5., minval=0.)
+        self.homing_backoff_dist = config.getfloat(
+            'homing_backoff_dist', 0.)
+        self.homing_tolerance = config.getfloat(
+            'homing_tolerance', None, minval=0.)
+        homing_tolerance_retries = 0
+        if self.homing_tolerance is not None:
+            homing_tolerance_retries = 3
+        self.homing_tolerance_retries = config.getint(
+            'homing_tolerance_retries', homing_tolerance_retries, minval=0, maxval=20)
+        self.homing_samples = config.getint(
+            'homing_samples', 2, minval=2, maxval=10)
+        self.homing_before_delay = config.getfloat(
+            'homing_before_delay', 0., minval=0)
+        self.second_homing_before_delay = config.getfloat(
+            'second_homing_before_delay', 0., minval=0)
         self.homing_positive_dir = config.getboolean(
             'homing_positive_dir', None)
         if self.homing_positive_dir is None:
@@ -362,10 +393,15 @@ class PrinterRail:
     def get_homing_info(self):
         homing_info = collections.namedtuple('homing_info', [
             'speed', 'position_endstop', 'retract_speed', 'retract_dist',
-            'positive_dir', 'second_homing_speed'])(
+            'positive_dir', 'second_homing_speed', 'homing_tolerance',
+            'homing_tolerance_retries', 'homing_before_delay',
+            'second_homing_before_delay', 'homing_samples', 'homing_backoff_dist'])(
                 self.homing_speed, self.position_endstop,
                 self.homing_retract_speed, self.homing_retract_dist,
-                self.homing_positive_dir, self.second_homing_speed)
+                self.homing_positive_dir, self.second_homing_speed,
+                self.homing_tolerance, self.homing_tolerance_retries,
+                self.homing_before_delay, self.second_homing_before_delay,
+                self.homing_samples, self.homing_backoff_dist)
         return homing_info
     def get_steppers(self):
         return list(self.steppers)

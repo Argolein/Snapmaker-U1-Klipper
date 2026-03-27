@@ -12,7 +12,7 @@ import mcu, chelper, kinematics.extruder
 
 # Class to track each move request
 class Move:
-    def __init__(self, toolhead, start_pos, end_pos, speed):
+    def __init__(self, toolhead, start_pos, end_pos, speed, line=None):
         self.toolhead = toolhead
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
@@ -23,6 +23,9 @@ class Move:
         self.is_kinematic_move = True
         self.axes_d = axes_d = [end_pos[i] - start_pos[i] for i in (0, 1, 2, 3)]
         self.move_d = move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
+        self.line = toolhead.print_file_line if line is None else line
+        if self.line is None:
+            self.line = 0xFFFFFFFF
         if move_d < .000000001:
             # Extrude only move
             self.end_pos = (start_pos[0], start_pos[1], start_pos[2],
@@ -58,9 +61,34 @@ class Move:
     def move_error(self, msg="Move out of range"):
         ep = self.end_pos
         m = "%s: %.3f %.3f %.3f [%.3f]" % (msg, ep[0], ep[1], ep[2], ep[3])
+        if msg.startswith("Must home ") and msg.endswith(" axis first"):
+            if len(msg) > 10:
+                axis_char = msg[10]
+                axis_index = ord(axis_char) - ord('X')
+                if 0 <= axis_index <= 2:
+                    coded_msg = '{"coded": "0003-0522-%04d-0012", "msg":"%s"}' % (axis_index, m)
+                    return self.toolhead.printer.command_error(coded_msg)
+        elif msg.startswith("Move out of range on ") and msg.endswith(" axis"):
+            parts = msg.split()
+            if len(parts) >= 6:
+                axis_char = parts[5][0]
+                axis_index = ord(axis_char) - ord('X')
+                if 0 <= axis_index <= 2:
+                    coded_msg = '{"coded": "0003-0522-%04d-0013", "msg":"%s"}' % (axis_index, m)
+                    return self.toolhead.printer.command_error(coded_msg)
+
         return self.toolhead.printer.command_error(m)
     def calc_junction(self, prev_move):
         if not self.is_kinematic_move or not prev_move.is_kinematic_move:
+            if self.toolhead.is_calibrating_flow:
+                extruder_v2 = self.toolhead.extruder.calc_junction(prev_move, self)
+                # Apply limits
+                self.max_start_v2 = min(
+                    extruder_v2, self.max_cruise_v2, prev_move.max_cruise_v2,
+                    prev_move.max_start_v2 + prev_move.delta_v2)
+                self.max_smoothed_v2 = min(
+                    self.max_start_v2
+                    , prev_move.max_smoothed_v2 + prev_move.smooth_delta_v2)
             return
         # Allow extruder to calculate its maximum junction
         extruder_v2 = self.toolhead.extruder.calc_junction(prev_move, self)
@@ -192,7 +220,7 @@ BUFFER_TIME_START = 0.250
 BGFLUSH_LOW_TIME = 0.200
 BGFLUSH_BATCH_TIME = 0.200
 BGFLUSH_EXTRA_TIME = 0.250
-MIN_KIN_TIME = 0.100
+MIN_KIN_TIME = 0.200
 MOVE_BATCH_TIME = 0.500
 STEPCOMPRESS_FLUSH_TIME = 0.050
 SDS_CHECK_TIME = 0.001 # step+dir+step filter in stepcompress.c
@@ -214,6 +242,11 @@ class ToolHead:
         self.lookahead = LookAheadQueue(self)
         self.lookahead.set_flush_time(BUFFER_TIME_HIGH)
         self.commanded_pos = [0., 0., 0., 0.]
+
+        # The maximum number of logical and physical extruders
+        self.max_logical_extruder_num = config.getint('max_logical_extruder_num')
+        self.max_physical_extruder_num = config.getint('max_physical_extruder_num')
+
         # Velocity and acceleration control
         self.max_velocity = config.getfloat('max_velocity', above=0.)
         self.max_accel = config.getfloat('max_accel', above=0.)
@@ -263,32 +296,52 @@ class ToolHead:
         gcode = self.printer.lookup_object('gcode')
         self.Coord = gcode.Coord
         self.extruder = kinematics.extruder.DummyExtruder(self.printer)
-        kin_name = config.get('kinematics')
+        self.is_grab_complete = True
+        self.print_file_line = None
+        self.kin_name = config.get('kinematics')
         try:
-            mod = importlib.import_module('kinematics.' + kin_name)
+            mod = importlib.import_module('kinematics.' + self.kin_name)
             self.kin = mod.load_kinematics(self, config)
         except config.error as e:
             raise
         except self.printer.lookup_object('pins').error as e:
             raise
         except:
-            msg = "Error loading kinematics '%s'" % (kin_name,)
+            msg = "Error loading kinematics '%s'" % (self.kin_name,)
             logging.exception(msg)
             raise config.error(msg)
+
+        # handle flow calibration mode
+        self.is_calibrating_flow = False
+        self.printer.register_event_handler("flow_calibration:begin", self._handle_flow_calibration_begin)
+        self.printer.register_event_handler("flow_calibration:end", self._handle_flow_calibration_end)
+        self.printer.register_event_handler("virtual_sdcard:reset_file", self._handle_flow_calibration_end)
         # Register commands
+        gcode.register_command('SWITCH_OF_EXTENDED_EXTRUDER', self.cmd_SWITCH_OF_EXTENDED_EXTRUDER)
         gcode.register_command('G4', self.cmd_G4)
         gcode.register_command('M400', self.cmd_M400)
         gcode.register_command('SET_VELOCITY_LIMIT',
                                self.cmd_SET_VELOCITY_LIMIT,
                                desc=self.cmd_SET_VELOCITY_LIMIT_help)
+        gcode.register_command("SET_MAX_Z_ACCEL", self.cmd_SET_MAX_Z_ACCEL)
+        gcode.register_command("SET_MAX_Z_VELOCITY", self.cmd_SET_MAX_Z_VELOCITY)
         gcode.register_command('M204', self.cmd_M204)
+        self.printer.register_event_handler("klippy:ready",
+                                            self._handle_ready)
         self.printer.register_event_handler("klippy:shutdown",
                                             self._handle_shutdown)
         # Load some default modules
         modules = ["gcode_move", "homing", "idle_timeout", "statistics",
-                   "manual_probe", "tuning_tower"]
+                   "manual_probe", "tuning_tower", "machine_state_manager"]
         for module_name in modules:
             self.printer.load_object(config, module_name)
+
+    def _handle_flow_calibration_begin(self):
+        logging.info("toolhead: begin flow calibration")
+        self.is_calibrating_flow = True
+    def _handle_flow_calibration_end(self):
+        logging.info("toolhead: end flow calibration")
+        self.is_calibrating_flow = False
     # Print time and flush tracking
     def _advance_flush_time(self, flush_time):
         flush_time = max(flush_time, self.last_flush_time)
@@ -347,7 +400,7 @@ class ToolHead:
                     move.accel_t, move.cruise_t, move.decel_t,
                     move.start_pos[0], move.start_pos[1], move.start_pos[2],
                     move.axes_r[0], move.axes_r[1], move.axes_r[2],
-                    move.start_v, move.cruise_v, move.accel)
+                    move.start_v, move.cruise_v, move.accel, move.line)
             if move.axes_d[3]:
                 self.extruder.move(next_move_time, move)
             next_move_time = (next_move_time + move.accel_t
@@ -453,6 +506,9 @@ class ToolHead:
     # Movement commands
     def get_position(self):
         return list(self.commanded_pos)
+
+    def get_kinematics_name(self):
+        return self.kin_name
     def set_position(self, newpos, homing_axes=()):
         self.flush_step_generation()
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -461,8 +517,8 @@ class ToolHead:
         self.commanded_pos[:] = newpos
         self.kin.set_position(newpos, homing_axes)
         self.printer.send_event("toolhead:set_position")
-    def move(self, newpos, speed):
-        move = Move(self, self.commanded_pos, newpos, speed)
+    def move(self, newpos, speed, line=None):
+        move = Move(self, self.commanded_pos, newpos, speed, line)
         if not move.move_d:
             return
         if move.is_kinematic_move:
@@ -473,6 +529,14 @@ class ToolHead:
         self.lookahead.add_move(move)
         if self.print_time > self.need_check_pause:
             self._check_pause()
+    def check_move(self, newpos, speed, line=None, last_position=None):
+        if last_position is None:
+            last_position = self.commanded_pos
+        move = Move(self, last_position, newpos, speed, line)
+        if not move.move_d:
+            return
+        if move.is_kinematic_move:
+            self.kin.check_move(move)
     def manual_move(self, coord, speed):
         curpos = list(self.commanded_pos)
         for i in range(len(coord)):
@@ -575,6 +639,24 @@ class ToolHead:
     def _handle_shutdown(self):
         self.can_pause = False
         self.lookahead.reset()
+    def _handle_ready(self):
+        if len(self.printer.lookup_object('extruder_list', [])) != 0:
+            self.reactor.register_callback(lambda e:self._extruder_auto_activate(), self.reactor.monotonic() + 3)
+    def _extruder_auto_activate(self):
+        state_message, category = self.printer.get_state_message()
+        extruder_list = self.printer.lookup_object('extruder_list', [])
+        if category == 'ready' and len(self.printer.lookup_object('extruder_list', [])) != 0:
+            extruder_list[0].active_gcode_offset()
+            activate_status = self.get_extruder().get_extruder_activate_status()
+            self.printer.lookup_object('gcode').respond_info("{}".format(activate_status))
+            self.is_grab_complete = True if activate_status[0][1] == 0 else False
+            if activate_status[0][1] == 0 and self.get_extruder().name != activate_status[0][0]:
+                extruder = self.printer.lookup_object(activate_status[0][0], None)
+                if extruder is not None:
+                    self.printer.lookup_object('gcode').run_script("ACTIVATE_EXTRUDER EXTRUDER={}".format(extruder.name))
+            self.get_extruder().only_enable_current_extruder_vref_sw()
+        return self.reactor.NEVER
+
     def get_kinematics(self):
         return self.kin
     def get_trapq(self):
@@ -608,6 +690,28 @@ class ToolHead:
         scv2 = self.square_corner_velocity**2
         self.junction_deviation = scv2 * (math.sqrt(2.) - 1.) / self.max_accel
         self.max_accel_to_decel = self.max_accel * (1. - self.min_cruise_ratio)
+
+    def cmd_SWITCH_OF_EXTENDED_EXTRUDER(self, gcmd):
+        index = gcmd.get_int('INDEX')
+        if index < self.max_physical_extruder_num or index >= self.max_logical_extruder_num:
+            raise gcmd.error(f"[toolhead] invalid extended extruder index: {index}")
+
+        print_task_config = self.printer.lookup_object('print_task_config', None)
+        if print_task_config is None:
+            raise gcmd.error("[toolhead] print_task_config not found")
+
+        extruder = None
+        extruder_index = print_task_config.get_extruder_map_index(index)
+        if extruder_index == 0:
+            extruder = self.printer.lookup_object('extruder', None)
+        else:
+            extruder = self.printer.lookup_object('extruder%d' % extruder_index, None)
+        if extruder is None:
+            raise gcmd.error("[toolhead] extruder not found")
+
+        gcmd._params['A'] = '0'
+        extruder.cmd_SWITCH_EXTRUDER_ADVANCED(gcmd)
+
     def cmd_G4(self, gcmd):
         # Dwell
         delay = gcmd.get_float('P', 0., minval=0.) / 1000.
@@ -646,10 +750,20 @@ class ToolHead:
                "square_corner_velocity: %.6f" % (
                    self.max_velocity, self.max_accel,
                    self.min_cruise_ratio, self.square_corner_velocity))
-        self.printer.set_rollover_info("toolhead", "toolhead: %s" % (msg,))
+        self.printer.set_rollover_info("toolhead", "toolhead: %s" % (msg,), log=False)
         if (max_velocity is None and max_accel is None
             and square_corner_velocity is None and min_cruise_ratio is None):
             gcmd.respond_info(msg, log=False)
+    def cmd_SET_MAX_Z_ACCEL(self, gcmd):
+        if self.kin is not None:
+            accel = gcmd.get_float('A', self.kin.max_z_accel)
+            self.kin.max_z_accel = accel
+            gcmd.respond_info("printer max z accel: {}".format(accel))
+    def cmd_SET_MAX_Z_VELOCITY(self, gcmd):
+        if self.kin is not None:
+            velocity = gcmd.get_float('V', self.kin.max_z_velocity)
+            self.kin.max_z_velocity = velocity
+            gcmd.respond_info("printer max z velocity: {}".format(velocity))
     def cmd_M204(self, gcmd):
         # Use S for accel
         accel = gcmd.get_float('S', None, above=0.)
@@ -664,6 +778,14 @@ class ToolHead:
             accel = min(p, t)
         self.max_accel = accel
         self._calc_junction_deviation()
+    def set_accel(self, accel):
+        if accel < 0:
+            return
+        self.wait_moves()
+        self.max_accel = accel
+        self._calc_junction_deviation()
+    def set_grab_complete(self, enable):
+        self.is_grab_complete = not not enable
 
 def add_printer_objects(config):
     config.get_printer().add_object('toolhead', ToolHead(config))

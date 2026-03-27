@@ -74,6 +74,8 @@ config USB_SERIAL_NUMBER_CHIPID
     default y
 config USB_SERIAL_NUMBER
     default "12345"
+config USB_PRODUCT_SUFFIX
+    default "-00000000000000-0000000000"
 
 menu "USB ids"
     depends on USB && LOW_LEVEL_OPTIONS
@@ -85,6 +87,8 @@ config USB_SERIAL_NUMBER_CHIPID
     bool "USB serial number from CHIPID" if HAVE_CHIPID
 config USB_SERIAL_NUMBER
     string "USB serial number" if !USB_SERIAL_NUMBER_CHIPID
+config USB_PRODUCT_SUFFIX
+    string "USB product suffix"
 endmenu
 
 # Optional features that can be disabled (for devices with small flash sizes)

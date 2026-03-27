@@ -48,6 +48,12 @@
   #define GPIO_Tx GPIO('D', 8)
   #define USARTx USART3
   #define USARTx_IRQn USART3_IRQn
+#elif CONFIG_STM32_SERIAL_AT_USART5_PB8_PB9 || CONFIG_STM32_USBCANBUS_PA11_PA12_AND_SERIAL_USART5_PB8_PB9
+  DECL_CONSTANT_STR("RESERVE_PINS_serial", "PB9,PB8");
+  #define GPIO_Rx GPIO('B', 8)
+  #define GPIO_Tx GPIO('B', 9)
+  #define USARTx UART5
+  #define USARTx_IRQn UART5_IRQn
 #endif
 
 #define CR1_FLAGS (USART_CR1_UE | USART_CR1_RE | USART_CR1_TE   \
@@ -92,5 +98,10 @@ serial_init(void)
 
     gpio_peripheral(GPIO_Rx, GPIO_FUNCTION(7), 1);
     gpio_peripheral(GPIO_Tx, GPIO_FUNCTION(7), 0);
+
+  #if CONFIG_STM32_SERIAL_AT_USART5_PB8_PB9 || CONFIG_STM32_USBCANBUS_PA11_PA12_AND_SERIAL_USART5_PB8_PB9
+    extern void mcu_uart_gpio_remap();
+    mcu_uart_gpio_remap();
+  #endif
 }
 DECL_INIT(serial_init);

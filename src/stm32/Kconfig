@@ -111,6 +111,14 @@ choice
         bool "Nation N32G455"
         select MACH_N32G45x
         select MACH_STM32F1
+    config MACH_AT32F415
+        bool "AT32F415"
+        select MACH_STM32F1
+        select MACH_AT32F4x
+    config MACH_AT32F403A
+        bool "AT32F403A"
+        select MACH_STM32F1
+        select MACH_AT32F4x
 endchoice
 
 config MACH_STM32F103x6
@@ -145,13 +153,15 @@ config MACH_STM32L4
     bool
 config MACH_N32G45x
     bool
+config MACH_AT32F4x
+    bool
 config HAVE_STM32_USBFS
     bool
     default y if MACH_STM32F0x2 || MACH_STM32G0Bx || MACH_STM32L4 || MACH_STM32G4
-    default y if (MACH_STM32F1 || MACH_STM32F070) && !STM32_CLOCK_REF_INTERNAL
+    default y if (MACH_STM32F1 || MACH_STM32F070) && !STM32_CLOCK_REF_INTERNAL && !MACH_AT32F415
 config HAVE_STM32_USBOTG
     bool
-    default y if MACH_STM32F2 || MACH_STM32F4 || MACH_STM32F7 || MACH_STM32H7
+    default y if MACH_STM32F2 || MACH_STM32F4 || MACH_STM32F7 || MACH_STM32H7 || MACH_AT32F415
 config HAVE_STM32_CANBUS
     bool
     default y if MACH_STM32F1 || MACH_STM32F2 || MACH_STM32F4x5 || MACH_STM32F446 || MACH_STM32F0x2
@@ -162,7 +172,7 @@ config HAVE_STM32_USBCANBUS
     bool
     depends on HAVE_STM32_USBFS || HAVE_STM32_USBOTG
     depends on HAVE_STM32_CANBUS || HAVE_STM32_FDCANBUS
-    depends on !MACH_STM32F1
+    depends on !MACH_STM32F1 || MACH_AT32F403A
     default y
 
 config MCU
@@ -190,6 +200,8 @@ config MCU
     default "stm32h750xx" if MACH_STM32H750
     default "stm32l412xx" if MACH_STM32L412
     default "stm32f103xe" if MACH_N32G45x
+    default "stm32f105xc" if MACH_AT32F415
+    default "stm32f103xe" if MACH_AT32F403A
 
 config CLOCK_FREQ
     int
@@ -208,6 +220,8 @@ config CLOCK_FREQ
     default 80000000 if MACH_STM32L412
     default 64000000 if MACH_N32G45x && STM32_CLOCK_REF_INTERNAL
     default 128000000 if MACH_N32G45x
+    default 144000000 if MACH_AT32F415
+    default 240000000 if MACH_AT32F403A
 
 config FLASH_SIZE
     hex
@@ -221,6 +235,8 @@ config FLASH_SIZE
     default 0x20000 if MACH_STM32H750
     default 0x200000 if MACH_STM32H743 || MACH_STM32F765
     default 0x20000 if MACH_N32G45x
+    default 0x40000 if MACH_AT32F415
+    default 0x40000 if MACH_AT32F403A
 
 config FLASH_BOOT_ADDRESS
     hex
@@ -248,14 +264,21 @@ config RAM_SIZE
     default 0x24000 if MACH_STM32G0Bx
     default 0x20000 if MACH_STM32H7
     default 0x10000 if MACH_N32G45x
+    default 0x8000 if MACH_AT32F415
+    default 0x18000 if MACH_AT32F403A
 
 config STACK_SIZE
     int
     default 512
 
+config AT32_ENABLE_DEBUG_USART
+    bool "Enable debug serial (Both AT32F415 and AT32F403A use PB10)"
+    depends on (MACH_AT32F415 || MACH_AT32F403A) && LOW_LEVEL_OPTIONS
+    default n
+
 config STM32F103GD_DISABLE_SWD
     bool "Disable SWD at startup (for GigaDevice stm32f103 clones)"
-    depends on MACH_STM32F103 && LOW_LEVEL_OPTIONS
+    depends on (MACH_STM32F103 || MACH_AT32F403A) && LOW_LEVEL_OPTIONS
     default n
     help
         The GigaDevice clone of the STM32F103 may not be able to
@@ -424,6 +447,10 @@ choice
         bool "Serial (on USART5 PD2/PD3)" if LOW_LEVEL_OPTIONS
         depends on MACH_STM32G0Bx
         select SERIAL
+    config STM32_SERIAL_AT_USART5_PB8_PB9
+        bool "Serial (on arterytek_403A USART5 PB8/PB9)" if LOW_LEVEL_OPTIONS
+        depends on MACH_AT32F403A
+        select SERIAL
     config STM32_CANBUS_PA11_PA12
         bool "CAN bus (on PA11/PA12)"
         depends on HAVE_STM32_CANBUS || HAVE_STM32_FDCANBUS
@@ -472,6 +499,11 @@ choice
         bool "USB to CAN bus bridge (USB on PA11/PA12)"
         depends on HAVE_STM32_USBCANBUS
         select USBCANBUS
+    config STM32_USBCANBUS_PA11_PA12_AND_SERIAL_USART5_PB8_PB9
+        bool "USB to CAN bus bridge (USB on PA11/PA12) and use Serial(PB8/PB9), The CAN bus bridge mcu can only be configured as serial mode"
+        depends on (HAVE_STM32_USBCANBUS && MACH_AT32F403A)
+        select USBCANBUS
+        select SERIAL
 endchoice
 choice
     prompt "CAN bus interface" if USBCANBUS
@@ -482,10 +514,10 @@ choice
         depends on HAVE_STM32_CANBUS && MACH_STM32F4
     config STM32_CMENU_CANBUS_PB5_PB6
         bool "CAN bus (on PB5/PB6)"
-        depends on (HAVE_STM32_CANBUS && MACH_STM32F4) || (HAVE_STM32_FDCANBUS && MACH_STM32G0B1)
+        depends on (HAVE_STM32_CANBUS && (MACH_STM32F4 || MACH_AT32F403A)) || (HAVE_STM32_FDCANBUS && MACH_STM32G0B1)
     config STM32_CMENU_CANBUS_PB12_PB13
         bool "CAN bus (on PB12/PB13)"
-        depends on (HAVE_STM32_CANBUS && MACH_STM32F4) || HAVE_STM32_FDCANBUS
+        depends on (HAVE_STM32_CANBUS && (MACH_STM32F4 || MACH_AT32F403A)) || HAVE_STM32_FDCANBUS
     config STM32_CMENU_CANBUS_PD0_PD1
         bool "CAN bus (on PD0/PD1)"
         depends on HAVE_STM32_CANBUS || HAVE_STM32_FDCANBUS
@@ -512,7 +544,7 @@ config STM32_CANBUS_PB5_PB6
     default y if STM32_MMENU_CANBUS_PB5_PB6 || STM32_CMENU_CANBUS_PB5_PB6
 config STM32_CANBUS_PB12_PB13
     bool
-    default y if STM32_MMENU_CANBUS_PB12_PB13 || STM32_CMENU_CANBUS_PB12_PB13
+    default y if STM32_MMENU_CANBUS_PB12_PB13 || STM32_CMENU_CANBUS_PB12_PB13 || STM32_USBCANBUS_PA11_PA12_AND_SERIAL
 config STM32_CANBUS_PD0_PD1
     bool
     default y if STM32_MMENU_CANBUS_PD0_PD1 || STM32_CMENU_CANBUS_PD0_PD1

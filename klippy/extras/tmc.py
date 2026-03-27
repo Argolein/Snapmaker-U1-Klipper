@@ -160,8 +160,10 @@ class TMCErrorCheck:
             count += 1
             if count >= 3:
                 fmt = self.fields.pretty_format(reg_name, val)
-                raise self.printer.command_error("TMC '%s' reports error: %s"
-                                                 % (self.stepper_name, fmt))
+                err_msg = '{"coded": "0003-0522-0000-0011", "oneshot": 0, "msg":"%s"}' % ("TMC '%s' reports error: %s" % (self.stepper_name, fmt))
+                raise self.printer.command_error(err_msg)
+                # raise self.printer.command_error("TMC '%s' reports error: %s"
+                #                                  % (self.stepper_name, fmt))
             if try_clear and val & err_mask:
                 try_clear = False
                 cleared_flags |= val & err_mask
@@ -212,7 +214,7 @@ class TMCErrorCheck:
             return {'drv_status': None, 'temperature': None}
         temp = None
         if self.adc_temp is not None:
-            temp = round((self.adc_temp - 2038) / 7.7, 2)
+            temp = round((self.adc_temp - 2038) / 7.7, 0)
         last_value, reg_name = self.drv_status_reg_info[:2]
         if last_value != self.last_drv_status:
             self.last_drv_status = last_value
@@ -484,6 +486,15 @@ class TMCVirtualPinHelper:
         name_parts = config.get_name().split()
         ppins = self.printer.lookup_object("pins")
         ppins.register_chip("%s_%s" % (name_parts[0], name_parts[-1]), self)
+        # Dynamic set homing tcoolthrs
+        self.config = config
+        self.name = config.get_name().split()[-1]
+        self.dynamic_homing_coolthrs = config.getboolean('dynamic_homing_coolthrs', True)
+        self.enable_sim_stall_set_endstops = config.getboolean('enable_sim_stall_set_endstops', True)
+        self.dynamic_coolthrs_ratio = config.getfloat('dynamic_coolthrs_ratio', 1.2, minval=0.0)
+        self.homing_tcoolthrs = config.getint('homing_tcoolthrs', None, minval=0)
+        # self.name = config.get_name().split()[-1]
+        # self.gcode = self.printer.lookup_object('gcode')
     def setup_pin(self, pin_type, pin_params):
         # Validate pin
         ppins = self.printer.lookup_object('pins')
@@ -501,8 +512,11 @@ class TMCVirtualPinHelper:
         self.mcu_endstop = ppins.setup_pin('endstop', self.diag_pin)
         return self.mcu_endstop
     def handle_homing_move_begin(self, hmove):
-        if self.mcu_endstop not in hmove.get_mcu_endstops():
+        if (self.mcu_endstop not in hmove.get_mcu_endstops() and
+            (not self.enable_sim_stall_set_endstops or
+            self.mcu_endstop not in hmove.get_mcu_sim_stall_set_endstops())):
             return
+        # self.gcode.respond_info("name: %s" % self.name)
         # Enable/disable stealthchop
         self.pwmthrs = self.fields.get_field("tpwmthrs")
         reg = self.fields.lookup_register("en_pwm_mode", None)
@@ -520,9 +534,21 @@ class TMCVirtualPinHelper:
         self.mcu_tmc.set_register("GCONF", val)
         # Enable tcoolthrs (if not already)
         self.coolthrs = self.fields.get_field("tcoolthrs")
-        if self.coolthrs == 0:
-            tc_val = self.fields.set_field("tcoolthrs", 0xfffff)
+        if self.dynamic_homing_coolthrs:
+            if self.homing_tcoolthrs is not None:
+                tc_val = self.fields.set_field("tcoolthrs", max(0, min(0xfffff, self.homing_tcoolthrs)))
+            else:
+                dynamic_tc_val = TMCtstepHelper(self.mcu_tmc, hmove.homing_speed, config=self.config)
+                final_tc_val = int(dynamic_tc_val * self.dynamic_coolthrs_ratio)
+                final_tc_val = max(0, min(0xfffff, final_tc_val))
+                tc_val = self.fields.set_field("tcoolthrs", final_tc_val)
+                # logging.info("%s: Dynamic TCOOLTHRS = %d (base: %d, speed: %.2f mm/s, ratio: %.2f)" %
+                #        (self.name, final_tc_val, dynamic_tc_val, hmove.homing_speed, self.dynamic_coolthrs_ratio))
             self.mcu_tmc.set_register("TCOOLTHRS", tc_val)
+        else:
+            if self.coolthrs == 0:
+                tc_val = self.fields.set_field("tcoolthrs", 0xfffff)
+                self.mcu_tmc.set_register("TCOOLTHRS", tc_val)
         # Disable thigh
         reg = self.fields.lookup_register("thigh", None)
         if reg is not None:
@@ -530,7 +556,9 @@ class TMCVirtualPinHelper:
             th_val = self.fields.set_field("thigh", 0)
             self.mcu_tmc.set_register(reg, th_val)
     def handle_homing_move_end(self, hmove):
-        if self.mcu_endstop not in hmove.get_mcu_endstops():
+        if (self.mcu_endstop not in hmove.get_mcu_endstops() and
+            (not self.enable_sim_stall_set_endstops or
+            self.mcu_endstop not in hmove.get_mcu_sim_stall_set_endstops())):
             return
         # Restore stealthchop/spreadcycle
         reg = self.fields.lookup_register("en_pwm_mode", None)

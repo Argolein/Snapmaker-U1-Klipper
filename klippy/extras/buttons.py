@@ -86,7 +86,7 @@ class MCU_buttons:
 # ADC button tracking
 ######################################################################
 
-ADC_REPORT_TIME = 0.015
+ADC_REPORT_TIME = 0.100
 ADC_DEBOUNCE_TIME = 0.025
 ADC_SAMPLE_TIME = 0.001
 ADC_SAMPLE_COUNT = 6
@@ -102,6 +102,7 @@ class MCU_ADC_buttons:
         self.pin = pin
         self.min_value = 999999999999.9
         self.max_value = 0.
+        self.last_adc_value = 0
         ppins = printer.lookup_object('pins')
         self.mcu_adc = ppins.setup_pin('adc', self.pin)
         self.mcu_adc.setup_adc_sample(ADC_SAMPLE_TIME, ADC_SAMPLE_COUNT)
@@ -116,6 +117,7 @@ class MCU_ADC_buttons:
 
     def adc_callback(self, read_time, read_value):
         adc = max(.00001, min(.99999, read_value))
+        self.last_adc_value = adc
         value = self.pullup * adc / (1.0 - adc)
 
         # Determine button pressed
@@ -261,6 +263,7 @@ class PrinterButtons:
             self.adc_buttons[pin] = adc_buttons = MCU_ADC_buttons(
                 self.printer, pin, pullup)
         adc_buttons.setup_button(min_val, max_val, callback)
+        return adc_buttons
     def register_adc_button_push(self, pin, min_val, max_val, pullup, callback):
         def helper(eventtime, state, callback=callback):
             if state:

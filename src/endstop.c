@@ -10,6 +10,11 @@
 #include "command.h" // DECL_COMMAND
 #include "sched.h" // struct timer
 #include "trsync.h" // trsync_do_trigger
+#include "autoconf.h"
+
+#if CONFIG_MACH_AT32F4x
+    #include "stm32/inductance_coil.h"
+#endif
 
 struct endstop {
     struct timer time;
@@ -17,6 +22,7 @@ struct endstop {
     uint32_t rest_time, sample_time, nextwake;
     struct trsync *ts;
     uint8_t flags, sample_count, trigger_count, trigger_reason;
+    uint8_t is_pulse_gpio;
 };
 
 enum { ESF_PIN_HIGH=1<<0, ESF_HOMING=1<<1 };
@@ -28,7 +34,13 @@ static uint_fast8_t
 endstop_event(struct timer *t)
 {
     struct endstop *e = container_of(t, struct endstop, time);
-    uint8_t val = gpio_in_read(e->pin);
+    uint8_t val = 0;
+#if CONFIG_MACH_AT32F4x
+    if (e->is_pulse_gpio)
+        val = pulse_gpio_read();
+    else
+#endif
+        val = gpio_in_read(e->pin);
     uint32_t nextwake = e->time.waketime + e->rest_time;
     if ((val ? ~e->flags : e->flags) & ESF_PIN_HIGH) {
         // No match - reschedule for the next attempt
@@ -45,7 +57,13 @@ static uint_fast8_t
 endstop_oversample_event(struct timer *t)
 {
     struct endstop *e = container_of(t, struct endstop, time);
-    uint8_t val = gpio_in_read(e->pin);
+    uint8_t val = 0;
+#if CONFIG_MACH_AT32F4x
+    if (e->is_pulse_gpio)
+        val = pulse_gpio_read();
+    else
+#endif
+        val = gpio_in_read(e->pin);
     if ((val ? ~e->flags : e->flags) & ESF_PIN_HIGH) {
         // No longer matching - reschedule for the next attempt
         e->time.func = endstop_event;
@@ -67,9 +85,11 @@ void
 command_config_endstop(uint32_t *args)
 {
     struct endstop *e = oid_alloc(args[0], command_config_endstop, sizeof(*e));
-    e->pin = gpio_in_setup(args[1], args[2]);
+    e->is_pulse_gpio = args[3];
+    if (!e->is_pulse_gpio)
+        e->pin = gpio_in_setup(args[1], args[2]);
 }
-DECL_COMMAND(command_config_endstop, "config_endstop oid=%c pin=%c pull_up=%c");
+DECL_COMMAND(command_config_endstop, "config_endstop oid=%c pin=%c pull_up=%c is_pulse_gpio=%c");
 
 // Home an axis
 void
@@ -102,6 +122,7 @@ void
 command_endstop_query_state(uint32_t *args)
 {
     uint8_t oid = args[0];
+    uint8_t val = 0;
     struct endstop *e = oid_lookup(oid, command_config_endstop);
 
     irq_disable();
@@ -109,7 +130,14 @@ command_endstop_query_state(uint32_t *args)
     uint32_t nextwake = e->nextwake;
     irq_enable();
 
+#if CONFIG_MACH_AT32F4x
+    if (e->is_pulse_gpio)
+        val = pulse_gpio_read();
+    else
+#endif
+        val = gpio_in_read(e->pin);
+
     sendf("endstop_state oid=%c homing=%c next_clock=%u pin_value=%c"
-          , oid, !!(eflags & ESF_HOMING), nextwake, gpio_in_read(e->pin));
+          , oid, !!(eflags & ESF_HOMING), nextwake, val);
 }
 DECL_COMMAND(command_endstop_query_state, "endstop_query_state oid=%c");

@@ -20,16 +20,9 @@
 struct queue_message {
     int len;
     uint8_t msg[MESSAGE_MAX];
-    union {
-        // Filled when on a command queue
-        struct {
-            uint64_t min_clock, req_clock;
-        };
-        // Filled when in sent/receive queues
-        struct {
-            double sent_time, receive_time;
-        };
-    };
+    // Store both clock and time information
+    uint64_t min_clock, req_clock;
+    double sent_time, receive_time;
     uint64_t notify_id;
     struct list_node node;
 };

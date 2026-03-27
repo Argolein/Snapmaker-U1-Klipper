@@ -35,12 +35,17 @@ struct stepper_move {
     int16_t add;
     uint16_t count;
     uint8_t flags;
+    uint32_t line;
 };
 
 enum { MF_DIR=1<<0 };
 
 struct stepper {
     struct timer time;
+    uint8_t type;
+    uint8_t index;
+    uint8_t print_act;
+    uint32_t move_line;
     uint32_t interval;
     int16_t add;
     uint32_t count;
@@ -94,7 +99,8 @@ stepper_load_next(struct stepper *s)
     } else {
         s->position += m->count;
     }
-
+    if (m->line != 0 && m->line != 0xFFFFFFFF && s->print_act)
+        s->move_line = m->line;
     move_free(m);
     return SF_RESCHEDULE;
 }
@@ -191,6 +197,10 @@ command_config_stepper(uint32_t *args)
     s->dir_pin = gpio_out_setup(args[2], 0);
     s->position = -POSITION_BIAS;
     s->step_pulse_ticks = args[4];
+    s->move_line = 0xFFFFFFFF;
+    s->type = args[5];
+    s->index = args[6];
+    s->print_act = 0;
     move_queue_setup(&s->mq, sizeof(struct stepper_move));
     if (HAVE_EDGE_OPTIMIZATION) {
         if (!s->step_pulse_ticks && invert_step < 0)
@@ -207,7 +217,8 @@ command_config_stepper(uint32_t *args)
     }
 }
 DECL_COMMAND(command_config_stepper, "config_stepper oid=%c step_pin=%c"
-             " dir_pin=%c invert_step=%c step_pulse_ticks=%u");
+             " dir_pin=%c invert_step=%c step_pulse_ticks=%u"
+             " type=%u index=%u");
 
 // Return the 'struct stepper' for a given stepper oid
 static struct stepper *
@@ -228,6 +239,7 @@ command_queue_step(uint32_t *args)
         shutdown("Invalid count parameter");
     m->add = args[3];
     m->flags = 0;
+    m->line = args[4];
 
     irq_disable();
     uint8_t flags = s->flags;
@@ -249,7 +261,7 @@ command_queue_step(uint32_t *args)
     irq_enable();
 }
 DECL_COMMAND(command_queue_step,
-             "queue_step oid=%c interval=%u count=%hu add=%hi");
+             "queue_step oid=%c interval=%u count=%hu add=%hi line=%u");
 
 // Set the direction of the next queued step
 void
@@ -324,6 +336,38 @@ stepper_stop(struct trsync_signal *tss, uint8_t reason)
         struct move_node *mn = move_queue_pop(&s->mq);
         struct stepper_move *m = container_of(mn, struct stepper_move, node);
         move_free(m);
+    }
+}
+
+uint16_t get_all_stepper_info(void *buffer, uint16_t max_num, uint8_t is_pl_save) {
+    struct stepper *s;
+    uint8_t i;
+    uint16_t len = 0;
+    if (buffer != NULL) {
+        foreach_oid(i, s, command_config_stepper) {
+            if (len < max_num && s->type != 0xFF) {
+                (((struct stepper_info *)buffer) + len)->type  = s->type;
+                (((struct stepper_info *)buffer) + len)->index = s->index;
+                (((struct stepper_info *)buffer) + len)->line  = s->move_line;
+                (((struct stepper_info *)buffer) + len)->position = stepper_get_position(s) - POSITION_BIAS;
+                len++;
+            }
+
+            if (is_pl_save) {
+                move_queue_clear(&s->mq);
+                stepper_stop(&s->stop_signal, 0);
+            }
+        }
+    }
+    return len;
+}
+
+void config_stepper_print_act(uint8_t enable, uint32_t move_line) {
+    struct stepper *s;
+    uint8_t i;
+    foreach_oid(i, s, command_config_stepper) {
+        s->print_act = !!enable;
+        s->move_line = move_line;
     }
 }
 

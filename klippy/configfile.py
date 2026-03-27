@@ -4,14 +4,18 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import sys, os, glob, re, time, logging, configparser, io
+from coded_exception import CodedException
 
-error = configparser.Error
+class ConfigError(CodedException, configparser.Error):
+    pass
+
+error = ConfigError
 
 class sentinel:
     pass
 
 class ConfigWrapper:
-    error = configparser.Error
+    error = ConfigError
     def __init__(self, printer, fileconfig, access_tracking, section):
         self.printer = printer
         self.fileconfig = fileconfig
@@ -391,6 +395,7 @@ class PrinterConfig:
         if not self.autosave.fileconfig.sections():
             return
         gcode = self.printer.lookup_object('gcode')
+        is_restart = gcmd.get_int('RESTART', 1)
         # Create string containing autosave data
         autosave_data = self._build_config_string(self.autosave)
         lines = [('#*# ' + l).strip()
@@ -432,4 +437,5 @@ class PrinterConfig:
             logging.exception(msg)
             raise gcode.error(msg)
         # Request a restart
-        gcode.request_restart('restart')
+        if is_restart :
+            gcode.request_restart('restart')

@@ -38,6 +38,7 @@ struct stepcompress {
     uint64_t last_step_clock;
     struct list_head msg_queue;
     uint32_t oid;
+    uint32_t move_line;
     int32_t queue_step_msgtag, set_next_step_dir_msgtag;
     int sdir, invert_sdir;
     // Step+dir+step filter
@@ -52,6 +53,7 @@ struct step_move {
     uint32_t interval;
     uint16_t count;
     int16_t add;
+    uint32_t line;
 };
 
 struct history_steps {
@@ -124,7 +126,7 @@ compress_bisect_add(struct stepcompress *sc)
             nextcount++;
             if (&sc->queue_pos[nextcount-1] >= qlast) {
                 int32_t count = nextcount - 1;
-                return (struct step_move){ interval, count, add };
+                return (struct step_move){ interval, count, add, sc->move_line};
             }
             nextpoint = minmax_point(sc, sc->queue_pos + nextcount - 1);
             int32_t nextaddfactor = nextcount*(nextcount-1)/2;
@@ -192,8 +194,8 @@ compress_bisect_add(struct stepcompress *sc)
     }
     if (zerocount + zerocount/16 >= bestcount)
         // Prefer add=0 if it's similar to the best found sequence
-        return (struct step_move){ zerointerval, zerocount, 0 };
-    return (struct step_move){ bestinterval, bestcount, bestadd };
+        return (struct step_move){ zerointerval, zerocount, 0, sc->move_line};
+    return (struct step_move){ bestinterval, bestcount, bestadd, sc->move_line};
 }
 
 
@@ -351,10 +353,10 @@ add_move(struct stepcompress *sc, uint64_t first_clock, struct step_move *move)
     uint64_t last_clock = first_clock + ticks;
 
     // Create and queue a queue_step command
-    uint32_t msg[5] = {
-        sc->queue_step_msgtag, sc->oid, move->interval, move->count, move->add
+    uint32_t msg[6] = {
+        sc->queue_step_msgtag, sc->oid, move->interval, move->count, move->add, sc->move_line
     };
-    struct queue_message *qm = message_alloc_and_encode(msg, 5);
+    struct queue_message *qm = message_alloc_and_encode(msg, 6);
     qm->min_clock = qm->req_clock = sc->last_step_clock;
     if (move->count == 1 && first_clock >= sc->last_step_clock + CLOCK_DIFF_MAX)
         qm->req_clock = first_clock;
@@ -502,12 +504,13 @@ queue_append(struct stepcompress *sc)
 // Add next step time
 int
 stepcompress_append(struct stepcompress *sc, int sdir
-                    , double print_time, double step_time)
+                    , double print_time, double step_time, uint32_t line)
 {
     // Calculate step clock
     double offset = print_time - sc->last_step_print_time;
     double rel_sc = (step_time + offset) * sc->mcu_freq;
     uint64_t step_clock = sc->last_step_clock + (uint64_t)rel_sc;
+    sc->move_line = line;
     // Flush previous pending step (if any)
     if (sc->next_step_clock) {
         if (unlikely(sdir != sc->next_step_dir)) {
@@ -531,8 +534,9 @@ stepcompress_append(struct stepcompress *sc, int sdir
 
 // Commit next pending step (ie, do not allow a rollback)
 int
-stepcompress_commit(struct stepcompress *sc)
+stepcompress_commit(struct stepcompress *sc, uint32_t line)
 {
+    sc->move_line = line;
     if (sc->next_step_clock)
         return queue_append(sc);
     return 0;

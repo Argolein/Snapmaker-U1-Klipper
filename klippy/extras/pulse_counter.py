@@ -58,8 +58,11 @@ class FrequencyCounter:
         self._freq = 0.
         self._counter = MCU_counter(printer, pin, sample_time, poll_time)
         self._counter.setup_callback(self._counter_callback)
+        self.reactor = printer.get_reactor()
+        self._last_report_time = 0
 
     def _counter_callback(self, time, count, count_time):
+        self._last_report_time = self.reactor.monotonic()
         if self._last_time is None:  # First sample
             self._last_time = time
         else:
@@ -77,3 +80,10 @@ class FrequencyCounter:
 
     def get_frequency(self):
         return self._freq
+
+    def get_count(self):
+        return self._last_count
+
+    def get_last_report_time(self):
+        return self._last_report_time
+

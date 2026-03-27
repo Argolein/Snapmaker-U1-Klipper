@@ -99,13 +99,13 @@ itersolve_gen_steps_range(struct stepper_kinematics *sk, struct move *m
             if (!have_bracket || high_time - low_time > .000000001) {
                 if (!is_dir_change && rel_dist >= -half_step)
                     // Avoid rollback if stepper fully reaches step position
-                    stepcompress_commit(sk->sc);
+                    stepcompress_commit(sk->sc, m->line);
                 // Guess is not close enough - guess again with new time
                 continue;
             }
         }
         // Found next step - submit it
-        int ret = stepcompress_append(sk->sc, sdir, m->print_time, guess.time);
+        int ret = stepcompress_append(sk->sc, sdir, m->print_time, guess.time, m->line);
         if (ret)
             return ret;
         target = sdir ? target+half_step+half_step : target-half_step-half_step;
@@ -263,6 +263,7 @@ itersolve_calc_position_from_coord(struct stepper_kinematics *sk
     m.start_pos.y = y;
     m.start_pos.z = z;
     m.move_t = 1000.;
+    m.line = 0xFFFFFFFF;
     return sk->calc_position_cb(sk, &m, 500.);
 }
 

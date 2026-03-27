@@ -51,6 +51,11 @@ gpio_clock_enable(GPIO_TypeDef *regs)
     RCC->APB2ENR;
 }
 
+#if CONFIG_MACH_AT32F415
+    #include "at32f415rc.h"
+#elif CONFIG_MACH_AT32F403A
+    #include "at32f403a.h"
+#else
 // Main clock setup called at chip startup
 static void
 clock_setup(void)
@@ -89,7 +94,7 @@ clock_setup(void)
     while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != RCC_CFGR_SWS_PLL)
         ;
 }
-
+#endif
 
 /****************************************************************
  * GPIO setup
@@ -270,7 +275,13 @@ armcm_main(void)
     RCC->APB2ENR = 0;
 
     // Setup clocks
+#if CONFIG_MACH_AT32F415
+    at32f415rc_clock_setup();
+#elif CONFIG_MACH_AT32F403A
+    at32f403a_clock_setup();
+#else
     clock_setup();
+#endif
 
     // Disable JTAG to free PA15, PB3, PB4
     enable_pclock(AFIO_BASE);
@@ -281,6 +292,11 @@ armcm_main(void)
     else
         stm32f1_alternative_remap(AFIO_MAPR_SWJ_CFG_Msk,
                                   AFIO_MAPR_SWJ_CFG_JTAGDISABLE);
+
+#if CONFIG_MACH_AT32F4x && CONFIG_AT32_ENABLE_DEBUG_USART
+    uart_debug_print_init(460800);
+    LOG_I("mcu start up\n");
+#endif
 
     sched_main();
 }

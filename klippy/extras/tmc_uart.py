@@ -70,7 +70,7 @@ def lookup_tmc_uart_mutex(mcu):
         pmutexes.mcu_to_mutex[mcu] = mutex
     return mutex
 
-TMC_BAUD_RATE = 40000
+TMC_BAUD_RATE = 9600
 TMC_BAUD_RATE_AVR = 9000
 
 # Code for sending messages on a TMC uart
@@ -199,6 +199,7 @@ def lookup_tmc_uart_bitbang(config, max_addr):
         raise ppins.error("TMC uart rx and tx pins must be on the same mcu")
     select_pins_desc = config.getlist('select_pins', None)
     addr = config.getint('uart_address', 0, minval=0, maxval=max_addr)
+    uart_reserved_address = config.getint('uart_reserved_address', 0, minval=0, maxval=max_addr)
     mcu_uart = rx_pin_params.get('class')
     if mcu_uart is None:
         mcu_uart = MCU_TMC_uart_bitbang(rx_pin_params, tx_pin_params,
@@ -206,7 +207,7 @@ def lookup_tmc_uart_bitbang(config, max_addr):
         rx_pin_params['class'] = mcu_uart
     instance_id = mcu_uart.register_instance(rx_pin_params, tx_pin_params,
                                              select_pins_desc, addr)
-    return instance_id, addr, mcu_uart
+    return instance_id, addr, mcu_uart, uart_reserved_address
 
 # Helper code for communicating via TMC uart
 class MCU_TMC_uart:
@@ -216,10 +217,11 @@ class MCU_TMC_uart:
         self.name_to_reg = name_to_reg
         self.fields = fields
         self.ifcnt = None
-        self.instance_id, self.addr, self.mcu_uart = lookup_tmc_uart_bitbang(
+        self.instance_id, self.addr, self.mcu_uart, self.uart_reserved_addr = lookup_tmc_uart_bitbang(
             config, max_addr)
         self.mutex = self.mcu_uart.mutex
         self.tmc_frequency = tmc_frequency
+        self.address_switched = False
     def get_fields(self):
         return self.fields
     def _do_get_register(self, reg_name):
@@ -230,6 +232,13 @@ class MCU_TMC_uart:
             val = self.mcu_uart.reg_read(self.instance_id, self.addr, reg)
             if val is not None:
                 return val
+        if not self.address_switched and self.uart_reserved_addr != self.addr:
+            self.address_switched = True
+            self.addr = self.uart_reserved_addr
+            for retry in range(5):
+                val = self.mcu_uart.reg_read(self.instance_id, self.addr, reg)
+                if val is not None:
+                    return val
         raise self.printer.command_error(
             "Unable to read tmc uart '%s' register %s" % (self.name, reg_name))
     def get_register(self, reg_name):

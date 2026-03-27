@@ -22,6 +22,7 @@ void usb_stall_ep0(void);
 void usb_set_address(uint_fast8_t addr);
 void usb_set_configure(void);
 struct usb_string_descriptor *usbserial_get_serialid(void);
+void usb_clear_stall(uint32_t ep, int is_in);
 
 // usb_cdc.c
 void usb_fill_serial(struct usb_string_descriptor *desc, int strlen, void *id);

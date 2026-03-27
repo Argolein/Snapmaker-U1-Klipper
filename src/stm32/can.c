@@ -58,12 +58,34 @@
 #endif
 
 #if CONFIG_MACH_STM32F1
- #define SOC_CAN CAN1
- #define FILTER_CAN CAN1
- #define CAN_RX0_IRQn  CAN1_RX0_IRQn
- #define CAN_RX1_IRQn  CAN1_RX1_IRQn
- #define CAN_TX_IRQn   CAN1_TX_IRQn
- #define CAN_SCE_IRQn  CAN1_SCE_IRQn
+ #if CONFIG_MACH_AT32F403A
+  #if (CONFIG_STM32_CANBUS_PA11_PA12 || CONFIG_STM32_CANBUS_PB8_PB9 \
+    || CONFIG_STM32_CANBUS_PD0_PD1 || CONFIG_STM32_CANBUS_PI9_PH13)
+   #define SOC_CAN CAN1
+   #define FILTER_CAN CAN1
+   #define CAN_RX0_IRQn  CAN1_RX0_IRQn
+   #define CAN_RX1_IRQn  CAN1_RX1_IRQn
+   #define CAN_TX_IRQn   CAN1_TX_IRQn
+   #define CAN_SCE_IRQn  CAN1_SE_IRQn
+  #elif CONFIG_STM32_CANBUS_PB5_PB6 || CONFIG_STM32_CANBUS_PB12_PB13
+   #define CAN2          ((CAN_TypeDef *)(APB1PERIPH_BASE + 0x6800))
+   #define SOC_CAN       CAN2
+   #define FILTER_CAN    CAN2
+   #define CAN_RX0_IRQn  69 //CAN2_RX0_IRQn
+   #define CAN_RX1_IRQn  70 //CAN2_RX1_IRQn
+   #define CAN_TX_IRQn   68 //CAN2_TX_IRQn
+   #define CAN_SCE_IRQn  71 //CAN2_SE_IRQn
+  #else
+   #error Uknown pins for AT32F403A CAN
+  #endif
+ #else
+  #define SOC_CAN CAN1
+  #define FILTER_CAN CAN1
+  #define CAN_RX0_IRQn  CAN1_RX0_IRQn
+  #define CAN_RX1_IRQn  CAN1_RX1_IRQn
+  #define CAN_TX_IRQn   CAN1_TX_IRQn
+  #define CAN_SCE_IRQn  CAN1_SCE_IRQn
+ #endif
  #define CAN_FUNCTION  GPIO_FUNCTION(9)  // Alternative function mapping number
 #endif
 
@@ -255,6 +277,11 @@ can_init(void)
     if (FILTER_CAN != SOC_CAN)
         // Also enable CAN1 clock if using CAN2 with filter on CAN1
         enable_pclock((uint32_t)FILTER_CAN);
+
+    #if CONFIG_MACH_AT32F403A && CONFIG_STM32_CANBUS_PB5_PB6
+        extern void mcu_can2_gpio_remap(void);
+        mcu_can2_gpio_remap();
+    #endif
 
     gpio_peripheral(GPIO_Rx, CAN_FUNCTION, 1);
     gpio_peripheral(GPIO_Tx, CAN_FUNCTION, 0);

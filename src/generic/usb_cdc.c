@@ -134,7 +134,7 @@ DECL_TASK(usb_bulk_out_task);
 #define CONCAT1(a, b) a ## b
 #define CONCAT(a, b) CONCAT1(a, b)
 #define USB_STR_MANUFACTURER u"Klipper"
-#define USB_STR_PRODUCT CONCAT(u,CONFIG_MCU)
+#define USB_STR_PRODUCT CONCAT(u,CONFIG_MCU CONFIG_USB_PRODUCT_SUFFIX)
 #define USB_STR_SERIAL CONCAT(u,CONFIG_USB_SERIAL_NUMBER)
 
 // String descriptors
@@ -489,6 +489,27 @@ usb_req_set_line(struct usb_ctrlrequest *req)
 }
 
 static void
+usb_req_clear_feature(struct usb_ctrlrequest *req)
+{
+    // Only support ENDPOINT_HALT feature on endpoint
+    if ((req->bRequestType & 0x7F) != USB_RECIP_ENDPOINT || req->wValue != 0 || req->wLength != 0) {
+        usb_do_stall();
+        return;
+    }
+    uint8_t ep_addr = req->wIndex & 0xFF;
+    int is_in = (ep_addr & 0x80) ? 1 : 0;
+    uint8_t ep_num = ep_addr & 0x0F;
+    // Only allow clearing STALL for known endpoints
+    if (ep_num == 0 || ep_num == USB_CDC_EP_BULK_IN || ep_num == USB_CDC_EP_BULK_OUT) {
+        usb_clear_stall(ep_num, is_in);
+        // Send zero-length packet
+        usb_do_xfer(NULL, 0, UX_SEND);
+        return;
+    }
+    usb_do_stall();
+}
+
+static void
 usb_state_ready(void)
 {
     struct usb_ctrlrequest req;
@@ -499,6 +520,7 @@ usb_state_ready(void)
     case USB_REQ_GET_DESCRIPTOR: usb_req_get_descriptor(&req); break;
     case USB_REQ_SET_ADDRESS: usb_req_set_address(&req); break;
     case USB_REQ_SET_CONFIGURATION: usb_req_set_configuration(&req); break;
+    case USB_REQ_CLEAR_FEATURE: usb_req_clear_feature(&req); break;
     case USB_CDC_REQ_SET_LINE_CODING: usb_req_set_line_coding(&req); break;
     case USB_CDC_REQ_GET_LINE_CODING: usb_req_get_line_coding(&req); break;
     case USB_CDC_REQ_SET_CONTROL_LINE_STATE: usb_req_set_line(&req); break;

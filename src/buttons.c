@@ -13,8 +13,9 @@
 struct buttons {
     struct timer time;
     uint32_t rest_ticks;
-    uint8_t pressed, last_pressed;
-    uint8_t report_count, reports[8];
+    uint32_t pressed, last_pressed;
+    uint32_t reports[16];
+    uint8_t report_count;
     uint8_t ack_count, retransmit_state, retransmit_count;
     uint8_t button_count;
     struct gpio_in pins[0];
@@ -30,7 +31,7 @@ buttons_event(struct timer *t)
     struct buttons *b = container_of(t, struct buttons, time);
 
     // Read pins
-    uint8_t i, bit, status = 0;
+    uint32_t i, bit, status = 0;
     for (i = 0, bit = 1; i < b->button_count; i++, bit <<= 1) {
         uint8_t val = gpio_in_read(b->pins[i]);
         if (val)
@@ -38,10 +39,10 @@ buttons_event(struct timer *t)
     }
 
     // Check if any pins have changed since last time
-    uint8_t diff = status ^ b->pressed;
+    uint32_t diff = status ^ b->pressed;
     if (diff) {
         // At least one pin has changed - do button debouncing
-        uint8_t debounced = ~(status ^ b->last_pressed);
+        uint32_t debounced = ~(status ^ b->last_pressed);
         if (diff & debounced) {
             // Pin has been consistently different - report it
             b->pressed = (b->pressed & ~debounced) | (status & debounced);
@@ -73,8 +74,8 @@ void
 command_config_buttons(uint32_t *args)
 {
     uint8_t button_count = args[1];
-    if (button_count > 8)
-        shutdown("Max of 8 buttons");
+    if (button_count > 32)
+        shutdown("Max of 32 buttons");
     struct buttons *b = oid_alloc(
         args[0], command_config_buttons
         , sizeof(*b) + sizeof(b->pins[0]) * button_count);
@@ -114,7 +115,7 @@ command_buttons_query(uint32_t *args)
 }
 DECL_COMMAND(command_buttons_query,
              "buttons_query oid=%c clock=%u rest_ticks=%u retransmit_count=%c"
-             " invert=%c");
+             " invert=%u");
 
 void
 command_buttons_ack(uint32_t *args)

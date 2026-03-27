@@ -6,6 +6,11 @@
 import logging, math, os, time
 from . import shaper_calibrate
 
+STATE_IDLE                              = 'idle'
+STATE_SHAPER_CALIBRATING                = 'shaper_calibrating'
+STATE_COMPLETED                         = 'completed'
+STATE_FAILED                            = 'failed'
+
 class TestAxis:
     def __init__(self, axis=None, vib_dir=None):
         if axis is None:
@@ -122,6 +127,7 @@ class ResonanceTester:
         self.printer = config.get_printer()
         self.move_speed = config.getfloat('move_speed', 50., above=0.)
         self.test = VibrationPulseTest(config)
+        self.state = STATE_IDLE
         if not config.get('accel_chip_x', None):
             self.accel_chip_names = [('xy', config.get('accel_chip').strip())]
         else:
@@ -131,6 +137,16 @@ class ResonanceTester:
             if self.accel_chip_names[0][1] == self.accel_chip_names[1][1]:
                 self.accel_chip_names = [('xy', self.accel_chip_names[0][1])]
         self.max_smoothing = config.getfloat('max_smoothing', None, minval=0.05)
+        self.delta_freq = config.getfloat('delta_freq', 10., minval=5.)
+        self.log_path = config.get('log_path', None)
+        debug = config.getint('debug', 0)
+        start_args = self.printer.get_start_args()
+        factory_mode = start_args.get('factory_mode', False)
+        if debug or factory_mode:
+            self.debug = True
+        else:
+            self.debug = False
+        self.fixed_shaper = config.get('fixed_shaper', 'mzv')
 
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command("MEASURE_AXES_NOISE",
@@ -142,6 +158,9 @@ class ResonanceTester:
         self.gcode.register_command("SHAPER_CALIBRATE",
                                     self.cmd_SHAPER_CALIBRATE,
                                     desc=self.cmd_SHAPER_CALIBRATE_help)
+        self.gcode.register_command("SM_FAST_SHAPER_CALIBRATE",
+                                    self.cmd_SM_FAST_SHAPER_CALIBRATE,
+                                    desc=self.cmd_SM_FAST_SHAPER_CALIBRATE_help)
         self.printer.register_event_handler("klippy:connect", self.connect)
 
     def connect(self):
@@ -221,6 +240,12 @@ class ResonanceTester:
         return parsed_chips
     def _get_max_calibration_freq(self):
         return 1.5 * self.test.get_max_freq()
+
+    def check_homed(self):
+        curtime = self.printer.get_reactor().monotonic()
+        homed_axes_list = self.printer.lookup_object('toolhead').get_status(curtime)['homed_axes']
+        return ('x' in homed_axes_list and 'y' in homed_axes_list and 'z' in homed_axes_list)
+
     cmd_TEST_RESONANCES_help = ("Runs the resonance test for a specifed axis")
     def cmd_TEST_RESONANCES(self, gcmd):
         # Parse parameters
@@ -270,67 +295,187 @@ class ResonanceTester:
                     point=test_point, max_freq=self._get_max_calibration_freq())
             gcmd.respond_info(
                     "Resonances data written to %s file" % (csv_name,))
+            if self.debug:
+                from multiprocessing import Process
+                # get current file path:
+                script = os.path.join(os.path.dirname(os.path.realpath(__file__)), \
+                                                 '..', '..', 'scripts', 'calibrate_shaper.py')
+                p = Process(target=lambda: os.system(
+                    f'python3 {script} -o {os.path.join(self.log_path, f"calibration_data_{axis.get_name()}_{name_suffix}.png")} {csv_name}'))
+                p.daemon = True
+                p.start()
+
     cmd_SHAPER_CALIBRATE_help = (
         "Simular to TEST_RESONANCES but suggest input shaper config")
     def cmd_SHAPER_CALIBRATE(self, gcmd):
-        # Parse parameters
-        axis = gcmd.get("AXIS", None)
-        if not axis:
-            calibrate_axes = [TestAxis('x'), TestAxis('y')]
-        elif axis.lower() not in 'xy':
-            raise gcmd.error("Unsupported axis '%s'" % (axis,))
-        else:
-            calibrate_axes = [TestAxis(axis.lower())]
-        chips_str = gcmd.get("CHIPS", None)
-        accel_chips = self._parse_chips(chips_str) if chips_str else None
+        machine_state_manager = self.printer.lookup_object('machine_state_manager', None)
+        self.state = STATE_IDLE
+        try:
+            if machine_state_manager is not None:
+                cur_sta = machine_state_manager.get_status()
+                if str(cur_sta["main_state"]) != "PRINTING":
+                    self.gcode.run_script_from_command("SET_MAIN_STATE MAIN_STATE=SHAPER_CALIBRATE")
+            # Parse parameters
+            axis = gcmd.get("AXIS", None)
+            if not axis:
+                calibrate_axes = [TestAxis('x'), TestAxis('y')]
+            elif axis.lower() not in 'xy':
+                # self.state = STATE_FAILED
+                raise gcmd.error("Unsupported axis '%s'" % (axis,))
+            else:
+                calibrate_axes = [TestAxis(axis.lower())]
 
-        max_smoothing = gcmd.get_float(
-                "MAX_SMOOTHING", self.max_smoothing, minval=0.05)
+            self.gcode.run_script_from_command("SET_ACTION_CODE ACTION=SHAPER_CALIBRATING")
+            self.state = STATE_SHAPER_CALIBRATING
+            if not self.check_homed():
+                self.gcode.run_script_from_command("G28\r\n")
 
-        name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
-        if not self.is_valid_name_suffix(name_suffix):
-            raise gcmd.error("Invalid NAME parameter")
+            self.gcode.run_script_from_command("T0 A0\r\n")
 
+            chips_str = gcmd.get("CHIPS", None)
+            accel_chips = self._parse_chips(chips_str) if chips_str else None
+
+            shaper_types = None
+            shaper_types_str = gcmd.get('SHAPER_TYPES', None)
+            if shaper_types_str is not None:
+                shaper_types = [item.lower() for item in shaper_types_str.split(',')]
+                if shaper_calibrate is not None:
+                    types_length = len(shaper_types)
+                    for i in range(types_length):
+                        if shaper_types[i] not in shaper_calibrate.AUTOTUNE_SHAPERS:
+                            del shaper_types[i]
+
+            max_smoothing = gcmd.get_float(
+                    "MAX_SMOOTHING", self.max_smoothing, minval=0.05)
+
+            name_suffix = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
+            if not self.is_valid_name_suffix(name_suffix):
+                # self.state = STATE_FAILED
+                raise gcmd.error("Invalid NAME parameter")
+
+            input_shaper = self.printer.lookup_object('input_shaper', None)
+
+            # Setup shaper calibration
+            helper = shaper_calibrate.ShaperCalibrate(self.printer)
+
+            calibration_data = self._run_test(gcmd, calibrate_axes, helper,
+                                            accel_chips=accel_chips)
+
+            configfile = self.printer.lookup_object('configfile')
+            for axis in calibrate_axes:
+                axis_name = axis.get_name()
+                gcmd.respond_info(
+                        "Calculating the best input shaper parameters for %s axis"
+                        % (axis_name,))
+                calibration_data[axis].normalize_to_frequencies()
+                systime = self.printer.get_reactor().monotonic()
+                toolhead = self.printer.lookup_object('toolhead')
+                toolhead_info = toolhead.get_status(systime)
+                scv = toolhead_info['square_corner_velocity']
+                max_freq = self._get_max_calibration_freq()
+                best_shaper = None
+                all_shapers = None
+                select_freq = None
+                select_type = None
+                if shaper_types is None or len(shaper_types) == 0:
+                    best_shaper, all_shapers = helper.find_best_shaper(
+                            calibration_data[axis], max_smoothing=max_smoothing,
+                            scv=scv, max_freq=max_freq, logger=gcmd.respond_info)
+                else:
+                    best_shaper, all_shapers = helper.find_best_shaper(
+                            calibration_data[axis], shapers=shaper_types, max_smoothing=max_smoothing,
+                            scv=scv, max_freq=max_freq, logger=gcmd.respond_info)
+                gcmd.respond_info(
+                        "Recommended shaper_type_%s = %s, shaper_freq_%s = %.1f Hz"
+                        % (axis_name, best_shaper.name,
+                        axis_name, best_shaper.freq))
+                # choose fixed shaper
+                for sp in all_shapers:
+                    if sp.name == self.fixed_shaper:
+                        best_shaper = sp
+                        break
+                select_type = best_shaper.name
+                select_freq = best_shaper.freq
+                if self.fixed_shaper == select_type and input_shaper is not None:
+                    if axis_name == 'x':
+                        if best_shaper.freq < input_shaper.shaper_freq_x_min or best_shaper.freq > input_shaper.shaper_freq_x_max:
+                            gcmd.respond_info("Input shaper x frequency out of range, using default: %f Hz" % (input_shaper.shaper_freq_x_default))
+                            select_freq = input_shaper.shaper_freq_x_default
+                    elif axis_name == 'y':
+                        if best_shaper.freq < input_shaper.shaper_freq_y_min or best_shaper.freq > input_shaper.shaper_freq_y_max:
+                            gcmd.respond_info("Input shaper y frequency out of range, using default: %f Hz" % (input_shaper.shaper_freq_y_default))
+                            select_freq = input_shaper.shaper_freq_y_default
+                gcmd.respond_info(
+                        "Selected shaper_type_%s = %s, shaper_freq_%s = %.1f Hz"
+                        % (axis_name, select_type, axis_name, select_freq))
+                if input_shaper is not None:
+                    helper.apply_params(input_shaper, axis_name, select_type, select_freq)
+                # helper.save_params(configfile, axis_name,
+                #                 best_shaper.name, best_shaper.freq)
+                csv_name = self.save_calibration_data(
+                        'calibration_data', name_suffix, helper, axis,
+                        calibration_data[axis], all_shapers, max_freq=max_freq)
+                gcmd.respond_info(
+                        "Shaper calibration data written to %s file" % (csv_name,))
+                if self.debug:
+                    from multiprocessing import Process
+                    # get current file path:
+                    script = os.path.join(os.path.dirname(os.path.realpath(__file__)), \
+                                                    '..', '..', 'scripts', 'calibrate_shaper.py')
+                    if max_smoothing is not None:
+                        script += f" --max_smoothing {max_smoothing}"
+                    script += f" --scv {scv} -f {max_freq}"
+                    p = Process(target=lambda: os.system(
+                        f'python3 {script} -o {os.path.join(self.log_path, f"calibration_data_{axis.get_name()}_{name_suffix}.png")} {csv_name}'))
+                    p.daemon = True
+                    p.start()
+
+            # gcmd.respond_info(
+            #     "The SAVE_CONFIG command will update the printer config file\n"
+            #     "with these parameters and restart the printer.")
+
+            self.state = STATE_COMPLETED
+        except Exception as e:
+            self.state = STATE_FAILED
+            raise
+        finally:
+            if machine_state_manager is not None:
+                cur_sta = machine_state_manager.get_status()
+                if str(cur_sta["main_state"]) == "PRINTING":
+                    self.gcode.run_script_from_command("SET_ACTION_CODE ACTION=IDLE")
+                elif str(cur_sta["main_state"]) == "SHAPER_CALIBRATE":
+                    self.gcode.run_script_from_command("EXIT_TO_IDLE REQ_FROM_STATE=SHAPER_CALIBRATE")
+
+    # not used yet
+    cmd_SM_FAST_SHAPER_CALIBRATE_help = ("SM CMD: fastly SHAPER_CALIBRATE")
+    def cmd_SM_FAST_SHAPER_CALIBRATE(self, gcmd):
+        gcode = self.printer.lookup_object('gcode')
         input_shaper = self.printer.lookup_object('input_shaper', None)
+        if input_shaper is None:
+            return
 
-        # Setup shaper calibration
-        helper = shaper_calibrate.ShaperCalibrate(self.printer)
+        # axis X
+        freq_start = input_shaper.shapers[0].params.shaper_freq - abs(self.delta_freq)
+        if (freq_start < self.test.min_freq):
+            freq_start = self.test.min_freq
+        freq_end = input_shaper.shapers[0].params.shaper_freq + abs(self.delta_freq)
+        if (freq_end > self.test.max_freq):
+            freq_end = self.test.max_freq
+        shaper_type = input_shaper.shapers[0].params.shaper_type
+        command = "SHAPER_CALIBRATE AXIS=x SHAPER_TYPES=%s FREQ_START=%d FREQ_END=%d" % (shaper_type, freq_start, freq_end)
+        gcode.run_script_from_command(command)
 
-        calibration_data = self._run_test(gcmd, calibrate_axes, helper,
-                                          accel_chips=accel_chips)
+        # axis Y
+        freq_start = input_shaper.shapers[1].params.shaper_freq - abs(self.delta_freq)
+        if (freq_start < self.test.min_freq):
+            freq_start = self.test.min_freq
+        freq_end = input_shaper.shapers[1].params.shaper_freq + abs(self.delta_freq)
+        if (freq_end > self.test.max_freq):
+            freq_end = self.test.max_freq
+        shaper_type = input_shaper.shapers[1].params.shaper_type
+        command = "SHAPER_CALIBRATE AXIS=y SHAPER_TYPES=%s FREQ_START=%d FREQ_END=%d" % (shaper_type, freq_start, freq_end)
+        gcode.run_script_from_command(command)
 
-        configfile = self.printer.lookup_object('configfile')
-        for axis in calibrate_axes:
-            axis_name = axis.get_name()
-            gcmd.respond_info(
-                    "Calculating the best input shaper parameters for %s axis"
-                    % (axis_name,))
-            calibration_data[axis].normalize_to_frequencies()
-            systime = self.printer.get_reactor().monotonic()
-            toolhead = self.printer.lookup_object('toolhead')
-            toolhead_info = toolhead.get_status(systime)
-            scv = toolhead_info['square_corner_velocity']
-            max_freq = self._get_max_calibration_freq()
-            best_shaper, all_shapers = helper.find_best_shaper(
-                    calibration_data[axis], max_smoothing=max_smoothing,
-                    scv=scv, max_freq=max_freq, logger=gcmd.respond_info)
-            gcmd.respond_info(
-                    "Recommended shaper_type_%s = %s, shaper_freq_%s = %.1f Hz"
-                    % (axis_name, best_shaper.name,
-                       axis_name, best_shaper.freq))
-            if input_shaper is not None:
-                helper.apply_params(input_shaper, axis_name,
-                                    best_shaper.name, best_shaper.freq)
-            helper.save_params(configfile, axis_name,
-                               best_shaper.name, best_shaper.freq)
-            csv_name = self.save_calibration_data(
-                    'calibration_data', name_suffix, helper, axis,
-                    calibration_data[axis], all_shapers, max_freq=max_freq)
-            gcmd.respond_info(
-                    "Shaper calibration data written to %s file" % (csv_name,))
-        gcmd.respond_info(
-            "The SAVE_CONFIG command will update the printer config file\n"
-            "with these parameters and restart the printer.")
     cmd_MEASURE_AXES_NOISE_help = (
         "Measures noise of all enabled accelerometer chips")
     def cmd_MEASURE_AXES_NOISE(self, gcmd):
@@ -367,6 +512,10 @@ class ResonanceTester:
         if point:
             name += "_%.3f_%.3f_%.3f" % (point[0], point[1], point[2])
         name += '_' + name_suffix
+        if self.log_path:
+            if not os.path.exists(self.log_path):
+                os.makedirs(self.log_path)
+            return os.path.join(self.log_path, name + ".csv")
         return os.path.join("/tmp", name + ".csv")
 
     def save_calibration_data(self, base_name, name_suffix, shaper_calibrate,
@@ -375,7 +524,22 @@ class ResonanceTester:
         output = self.get_filename(base_name, name_suffix, axis, point)
         shaper_calibrate.save_calibration_data(output, calibration_data,
                                                all_shapers, max_freq)
+        if self.debug:
+            if self.log_path:
+                if not os.path.exists(self.log_path):
+                    os.makedirs(self.log_path)
+                all_shapers_log = os.path.join(self.log_path, f"shaper_type_{axis.get_name()}_{name_suffix}.csv")
+            else:
+                all_shapers_log = os.path.join("/tmp", f"shaper_type_{axis.get_name()}_{name_suffix}.csv")
+            with open(all_shapers_log, 'w') as f:
+                f.write("shaper_type,shaper_freq(Hz),max_accel(mm/s^2), score\n")
+                for shaper in all_shapers:
+                    f.write(f"{shaper.name}, {shaper.freq:.1f}, {shaper.max_accel:.0f}, {shaper.score:.6f}\n")
         return output
+
+    def get_status(self, eventtime=None):
+        return {
+            'state': self.state}
 
 def load_config(config):
     return ResonanceTester(config)

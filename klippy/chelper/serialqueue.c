@@ -11,7 +11,7 @@
 // transmitted, schedules transmission of commands at specified mcu
 // clock times, prioritizes commands, and handles retransmissions.  A
 // background thread is launched to do this work and minimize latency.
-
+#define _GNU_SOURCE
 #include <linux/can.h> // // struct can_frame
 #include <math.h> // fabs
 #include <pthread.h> // pthread_mutex_lock
@@ -250,6 +250,8 @@ handle_message(struct serialqueue *sq, double eventtime, int len)
         qm->len = 0;
         qm->sent_time = sq->last_receive_sent_time;
         qm->receive_time = eventtime;
+        // For notification messages, preserve the original clock values
+        // (min_clock and req_clock are already set from when the message was created)
         list_add_tail(&qm->node, &sq->receive_queue);
         must_wake = 1;
     }
@@ -269,6 +271,9 @@ handle_message(struct serialqueue *sq, double eventtime, int len)
                          ? sq->last_receive_sent_time : 0.);
         qm->receive_time = get_monotonic(); // must be time post read()
         qm->receive_time -= calculate_bittime(sq, len);
+        // For received messages, min_clock and req_clock are not applicable
+        qm->min_clock = 0;
+        qm->req_clock = 0;
         list_add_tail(&qm->node, &sq->receive_queue);
         must_wake = 1;
     }
@@ -446,6 +451,10 @@ build_and_send_command(struct serialqueue *sq, uint8_t *buf, int pending
                        , double eventtime)
 {
     int len = MESSAGE_HEADER_SIZE;
+    uint64_t batch_min_clock = MAX_CLOCK;
+    uint64_t batch_req_clock = MAX_CLOCK;
+    int first_message = 0;
+
     while (sq->ready_bytes) {
         // Find highest priority message (message with lowest req_clock)
         uint64_t min_clock = MAX_CLOCK;
@@ -468,6 +477,14 @@ build_and_send_command(struct serialqueue *sq, uint8_t *buf, int pending
         list_del(&qm->node);
         if (list_empty(&cq->ready_queue) && list_empty(&cq->upcoming_queue))
             list_del(&cq->node);
+
+        // Track min/req clock values for the batch
+        if (!first_message) {
+            first_message = 1;
+            batch_min_clock = qm->min_clock;
+            batch_req_clock = qm->req_clock;
+        }
+
         memcpy(&buf[len], qm->msg, qm->len);
         len += qm->len;
         sq->ready_bytes -= qm->len;
@@ -497,6 +514,10 @@ build_and_send_command(struct serialqueue *sq, uint8_t *buf, int pending
     out->len = len;
     out->sent_time = eventtime;
     out->receive_time = idletime;
+    // Preserve min_clock and req_clock from the batch
+    // If no messages were processed, keep MAX_CLOCK
+    out->min_clock = batch_min_clock;
+    out->req_clock = batch_req_clock;
     if (list_empty(&sq->sent_queue))
         pollreactor_update_timer(sq->pr, SQPT_RETRANSMIT, idletime + sq->rto);
     if (!sq->rtt_sample_seq)
@@ -681,6 +702,7 @@ serialqueue_alloc(int serial_fd, char serial_fd_type, int client_id)
     ret = pthread_mutex_init(&sq->fast_reader_dispatch_lock, NULL);
     if (ret)
         goto fail;
+
     ret = pthread_create(&sq->tid, NULL, background_thread, sq);
     if (ret)
         goto fail;
@@ -861,6 +883,8 @@ serialqueue_pull(struct serialqueue *sq, struct pull_queue_message *pqm)
     pqm->len = qm->len;
     pqm->sent_time = qm->sent_time;
     pqm->receive_time = qm->receive_time;
+    pqm->min_clock = qm->min_clock;
+    pqm->req_clock = qm->req_clock;
     pqm->notify_id = qm->notify_id;
     if (qm->len)
         debug_queue_add(&sq->old_receive, qm);
@@ -973,6 +997,8 @@ serialqueue_extract_old(struct serialqueue *sq, int sentq
             pqm->len = qm->len;
             pqm->sent_time = qm->sent_time;
             pqm->receive_time = qm->receive_time;
+            pqm->min_clock = qm->min_clock;
+            pqm->req_clock = qm->req_clock;
         }
         list_del(&qm->node);
         message_free(qm);

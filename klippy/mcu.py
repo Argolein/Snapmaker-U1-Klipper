@@ -223,7 +223,7 @@ class MCU_trsync:
             s.note_homing_end()
         return params['trigger_reason']
 
-TRSYNC_TIMEOUT = 0.025
+TRSYNC_TIMEOUT = 0.050
 TRSYNC_SINGLE_MCU_TIMEOUT = 0.250
 
 class TriggerDispatch:
@@ -285,7 +285,7 @@ class TriggerDispatch:
         return res[0]
 
 class MCU_endstop:
-    def __init__(self, mcu, pin_params):
+    def __init__(self, mcu, pin_params, is_pulse_gpio=False):
         self._mcu = mcu
         self._pin = pin_params['pin']
         self._pullup = pin_params['pullup']
@@ -294,6 +294,7 @@ class MCU_endstop:
         self._home_cmd = self._query_cmd = None
         self._mcu.register_config_callback(self._build_config)
         self._rest_ticks = 0
+        self._is_pulse_gpio = is_pulse_gpio
         self._dispatch = TriggerDispatch(mcu)
     def get_mcu(self):
         return self._mcu
@@ -303,8 +304,8 @@ class MCU_endstop:
         return self._dispatch.get_steppers()
     def _build_config(self):
         # Setup config
-        self._mcu.add_config_cmd("config_endstop oid=%d pin=%s pull_up=%d"
-                                 % (self._oid, self._pin, self._pullup))
+        self._mcu.add_config_cmd("config_endstop oid=%d pin=%s pull_up=%d is_pulse_gpio=%d"
+                                 % (self._oid, self._pin, self._pullup, self._is_pulse_gpio))
         self._mcu.add_config_cmd(
             "endstop_home oid=%d clock=0 sample_ticks=0 sample_count=0"
             " rest_ticks=0 pin_value=0 trsync_oid=0 trigger_reason=0"
@@ -494,6 +495,7 @@ class MCU_adc:
         self._oid = self._callback = None
         self._mcu.register_config_callback(self._build_config)
         self._inv_max_adc = 0.
+        self._read_time_tol = self._min_update_ratio = None
     def get_mcu(self):
         return self._mcu
     def setup_adc_sample(self, sample_time, sample_count,
@@ -506,6 +508,9 @@ class MCU_adc:
     def setup_adc_callback(self, report_time, callback):
         self._report_time = report_time
         self._callback = callback
+    def set_read_tolerance(self, read_time_tol, min_update_ratio):
+        self._read_time_tol = read_time_tol
+        self._min_update_ratio = min_update_ratio
     def get_last_value(self):
         return self._last_state
     def _build_config(self):
@@ -536,6 +541,30 @@ class MCU_adc:
         next_clock = self._mcu.clock32_to_clock64(params['next_clock'])
         last_read_clock = next_clock - self._report_clock
         last_read_time = self._mcu.clock_to_print_time(last_read_clock)
+        if self._read_time_tol is not None and self._min_update_ratio is not None:
+            # Get the current print time
+            curtime = self._mcu.get_printer().get_reactor().monotonic()
+            printtime = self._mcu.estimated_print_time(curtime)
+            allow_max_read_time = printtime - self._report_time*self._read_time_tol
+            adc_except_recorder = self._mcu.get_printer().lookup_object('adc_except_recorder', None)
+            mcu_name = self._mcu.get_name()
+            oid = self._oid
+            if last_read_time < allow_max_read_time:
+                if adc_except_recorder is not None:
+                    mcu_dict = adc_except_recorder.setdefault(mcu_name, {})
+                    oid_dict = mcu_dict.setdefault(oid, {})
+                    oid_dict.setdefault('too_late', 0)
+                    oid_dict['too_late'] += 1
+                    oid_dict['last_read_time_too_late'] = printtime - last_read_time
+                return
+            if last_read_time - self._last_state[1] < self._report_time*self._min_update_ratio:
+                if adc_except_recorder is not None:
+                    mcu_dict = adc_except_recorder.setdefault(mcu_name, {})
+                    oid_dict = mcu_dict.setdefault(oid, {})
+                    oid_dict.setdefault('too_fast', 0)
+                    oid_dict['too_fast'] += 1
+                    oid_dict['last_read_time_too_fast'] = last_read_time - self._last_state[1]
+                return
         self._last_state = (last_value, last_read_time)
         if self._callback is not None:
             self._callback(last_read_time, last_value)
@@ -556,7 +585,7 @@ class MCU:
             self._name = self._name[4:]
         # Serial port
         wp = "mcu '%s': " % (self._name)
-        self._serial = serialhdl.SerialReader(self._reactor, warn_prefix=wp)
+        self._serial = serialhdl.SerialReader(self._reactor, warn_prefix=wp, mcu=self)
         self._baud = 0
         self._canbus_iface = None
         canbus_uuid = config.get('canbus_uuid', None)
@@ -604,6 +633,16 @@ class MCU:
         self._mcu_tick_avg = 0.
         self._mcu_tick_stddev = 0.
         self._mcu_tick_awake = 0.
+        self._mcu_err_msg_len = 0
+        self._mcu_err_msg_dest = 0
+        self._mcu_err_msg_sync = 0
+        self._mcu_err_msg_crc = 0
+        adc_except_recorder = self._printer.lookup_object('adc_except_recorder', None)
+        if adc_except_recorder is None:
+            printer.add_object('adc_except_recorder', {})
+        if self._name == 'mcu':
+            gcode = self._printer.lookup_object('gcode')
+            gcode.register_command('QUERY_ADC_EXCEPT_RECORDER', self.cmd_QUERY_ADC_EXCEPT_RECORDER)
         # Register handlers
         printer.load_object(config, "error_mcu")
         printer.register_event_handler("klippy:firmware_restart",
@@ -614,6 +653,10 @@ class MCU:
         printer.register_event_handler("klippy:shutdown", self._shutdown)
         printer.register_event_handler("klippy:disconnect", self._disconnect)
         printer.register_event_handler("klippy:ready", self._ready)
+    def cmd_QUERY_ADC_EXCEPT_RECORDER(self, gcmd):
+        adc_except_recorder = self._printer.lookup_object('adc_except_recorder', None)
+        if adc_except_recorder is not None:
+            gcmd.respond_info("adc_except_recorder: {}".format(adc_except_recorder))
     # Serial callbacks
     def _handle_mcu_stats(self, params):
         count = params['count']
@@ -624,6 +667,14 @@ class MCU:
         diff = count*tick_sumsq - tick_sum**2
         self._mcu_tick_stddev = c * math.sqrt(max(0., diff))
         self._mcu_tick_awake = tick_sum / self._mcu_freq
+        if 'err_len' in params:
+            self._mcu_err_msg_len = params['err_len']
+        if 'err_dest' in params:
+            self._mcu_err_msg_dest = params['err_dest']
+        if 'err_sync' in params:
+            self._mcu_err_msg_sync = params['err_sync']
+        if 'err_crc' in params:
+            self._mcu_err_msg_crc = params['err_crc']
     def _handle_shutdown(self, params):
         if self._is_shutdown:
             return
@@ -841,10 +892,12 @@ class MCU:
             pconfig.runtime_warning(msg)
     # Config creation helpers
     def setup_pin(self, pin_type, pin_params):
-        pcs = {'endstop': MCU_endstop,
+        pcs = {'endstop': MCU_endstop, 'pulse_endstop': MCU_endstop,
                'digital_out': MCU_digital_out, 'pwm': MCU_pwm, 'adc': MCU_adc}
         if pin_type not in pcs:
             raise pins.error("pin type %s not supported on mcu" % (pin_type,))
+        if pin_type == 'pulse_endstop':
+            return pcs[pin_type](self, pin_params, True)
         return pcs[pin_type](self, pin_params)
     def create_oid(self):
         self._oid_count += 1
@@ -896,6 +949,8 @@ class MCU:
         return self._clocksync.print_time_to_clock(print_time)
     def clock_to_print_time(self, clock):
         return self._clocksync.clock_to_print_time(clock)
+    def estimate_clock_systime(self, clock):
+        return self._clocksync.estimate_clock_systime(clock)
     def estimated_print_time(self, eventtime):
         return self._clocksync.estimated_print_time(eventtime)
     def clock32_to_clock64(self, clock32):
@@ -988,8 +1043,13 @@ class MCU:
         self._is_timeout = True
         logging.info("Timeout with MCU '%s' (eventtime=%f)",
                      self._name, eventtime)
-        self._printer.invoke_shutdown("Lost communication with MCU '%s'" % (
-            self._name,))
+        index = {'host': 0, 'mcu': 1, 'e0': 2, 'e1': 3, 'e2': 4,'e3': 5}.get(self._name, 255)
+        err_info = "Lost communication with MCU '%s'" % (self._name,)
+        coded, oneshot = f"0003-0522-{index:04d}-0008", 0
+        coded_message = '{"coded": "%s", "oneshot": %d, "msg":"%s"}' % (coded, oneshot, err_info)
+        self._printer.invoke_shutdown(coded_message)
+        # self._printer.invoke_shutdown("Lost communication with MCU '%s'" % (
+        #     self._name,))
     # Misc external commands
     def is_fileoutput(self):
         return self._printer.get_start_args().get('debugoutput') is not None
@@ -1000,8 +1060,9 @@ class MCU:
     def get_status(self, eventtime=None):
         return dict(self._get_status_info)
     def stats(self, eventtime):
-        load = "mcu_awake=%.03f mcu_task_avg=%.06f mcu_task_stddev=%.06f" % (
-            self._mcu_tick_awake, self._mcu_tick_avg, self._mcu_tick_stddev)
+        load = "mcu_awake=%.03f mcu_task_avg=%.06f mcu_task_stddev=%.06f err_len=%d err_dest=%d err_sync=%d err_crc=%d" % (
+            self._mcu_tick_awake, self._mcu_tick_avg, self._mcu_tick_stddev,
+            self._mcu_err_msg_len, self._mcu_err_msg_dest, self._mcu_err_msg_sync, self._mcu_err_msg_crc)
         stats = ' '.join([load, self._serial.stats(eventtime),
                           self._clocksync.stats(eventtime)])
         parts = [s.split('=', 1) for s in stats.split()]

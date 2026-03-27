@@ -14,6 +14,8 @@ dirs-$(CONFIG_MACH_STM32G0) += lib/stm32g0
 dirs-$(CONFIG_MACH_STM32G4) += lib/stm32g4
 dirs-$(CONFIG_MACH_STM32H7) += lib/stm32h7
 dirs-$(CONFIG_MACH_STM32L4) += lib/stm32l4
+dirs-$(CONFIG_MACH_AT32F415) += lib/at32f415 lib/at32f415/hal/src lib/stm32f1 lib/at32f415/usbd_class/cdc lib/at32f415/usb_drivers/src
+dirs-$(CONFIG_MACH_AT32F403A) += lib/at32f403a lib/at32f403a/hal/src lib/at32f403a/usbd_class/cdc lib/at32f403a/usbd_drivers/src
 
 MCU := $(shell echo $(CONFIG_MCU))
 MCU_UPPER := $(shell echo $(CONFIG_MCU) | tr a-z A-Z | tr X x)
@@ -21,6 +23,10 @@ MCU_UPPER := $(shell echo $(CONFIG_MCU) | tr a-z A-Z | tr X x)
 CFLAGS-$(CONFIG_MACH_STM32F0) += -mcpu=cortex-m0 -Ilib/stm32f0/include
 CFLAGS-$(CONFIG_MACH_STM32F103) += -mcpu=cortex-m3
 CFLAGS-$(CONFIG_MACH_N32G45x) += -mcpu=cortex-m4 -Ilib/n32g45x/include
+CFLAGS-$(CONFIG_MACH_AT32F403A) += -mcpu=cortex-m4 -DAT32F407RCT7 -Ilib/at32f403a -Ilib/at32f403a/hal/inc
+CFLAGS-$(CONFIG_MACH_AT32F403A) += -Ilib/at32f403a/usbd_drivers/inc -Ilib/at32f403a/usbd_class/cdc
+CFLAGS-$(CONFIG_MACH_AT32F415) += -mcpu=cortex-m4 -DAT32F415RCT7 -Ilib/at32f415 -Ilib/at32f415/hal/inc
+CFLAGS-$(CONFIG_MACH_AT32F415) += -Ilib/at32f415/usb_drivers/inc -Ilib/at32f415/usbd_class/cdc
 CFLAGS-$(CONFIG_MACH_STM32F1) += -Ilib/stm32f1/include
 CFLAGS-$(CONFIG_MACH_STM32F2) += -mcpu=cortex-m3 -Ilib/stm32f2/include
 CFLAGS-$(CONFIG_MACH_STM32F4) += -mcpu=cortex-m4 -Ilib/stm32f4/include
@@ -43,6 +49,19 @@ src-$(CONFIG_MACH_STM32F0) += ../lib/stm32f0/system_stm32f0xx.c
 src-$(CONFIG_MACH_STM32F0) += generic/timer_irq.c stm32/stm32f0_timer.c
 src-$(CONFIG_MACH_STM32F0) += stm32/stm32f0.c stm32/gpioperiph.c
 src-$(CONFIG_MACH_STM32F0) += stm32/stm32f0_adc.c stm32/stm32f0_i2c.c
+src-$(CONFIG_MACH_AT32F415) += stm32/at32f415rc.c stm32/adc.c
+src-$(CONFIG_MACH_AT32F415) += ../lib/at32f415/at32f415_clock.c ../lib/at32f415/system_at32f415.c
+src-$(CONFIG_MACH_AT32F415) += ../lib/at32f415/hal/src/at32f415_usart.c ../lib/at32f415/hal/src/at32f415_gpio.c
+src-$(CONFIG_MACH_AT32F415) += ../lib/at32f415/hal/src/at32f415_crm.c ../lib/stm32f1/system_stm32f1xx.c
+src-$(CONFIG_MACH_AT32F415) += ../lib/at32f415/hal/src/at32f415_tmr.c ../lib/at32f415/hal/src/at32f415_flash.c
+src-$(CONFIG_MACH_AT32F403A) += ../lib/stm32f1/system_stm32f1xx.c ../lib/at32f403a/at32f403a_407_clock.c
+src-$(CONFIG_MACH_AT32F403A) += stm32/adc.c stm32/at32f403a.c
+src-$(CONFIG_MACH_AT32F403A) += ../lib/at32f403a/hal/src/at32f403a_407_crm.c ../lib/at32f403a/hal/src/at32f403a_407_tmr.c
+src-$(CONFIG_MACH_AT32F403A) += ../lib/at32f403a/hal/src/at32f403a_407_gpio.c ../lib/at32f403a/hal/src/at32f403a_407_flash.c
+src-$(CONFIG_MACH_AT32F403A) += ../lib/at32f403a/hal/src/at32f403a_407_usart.c
+src-$(CONFIG_MACH_AT32F403A) += ../lib/at32f403a/hal/src/at32f403a_407_acc.c
+src-$(CONFIG_MACH_AT32F403A) += ../lib/at32f403a/system_at32f403a_407.c
+src-$(CONFIG_MACH_AT32F4x) += stm32/inductance_coil.c stm32/power_loss_check.c
 src-$(CONFIG_MACH_STM32F103) += ../lib/stm32f1/system_stm32f1xx.c
 src-$(CONFIG_MACH_STM32F103) += stm32/adc.c
 src-$(CONFIG_MACH_N32G45x) += ../lib/stm32f1/system_stm32f1xx.c
