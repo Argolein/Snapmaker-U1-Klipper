@@ -1,0 +1,129 @@
+name: Bug report
+description: Report a reproducible bug in this project
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue form is for bug reports only.
+        Please provide complete and accurate information so the problem can be reproduced and diagnosed efficiently.
+
+  - type: input
+    id: firmware-version
+    attributes:
+      label: Firmware version
+      description: Enter the firmware version, commit hash, branch name, or release date currently in use.
+      placeholder: "For example: v1.2.0 / commit abc1234 / branch main"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: firmware-source
+    attributes:
+      label: Firmware source
+      description: Select where the firmware came from.
+      options:
+        - Official release
+        - Self-compiled
+        - Third-party provider
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: third-party-source
+    attributes:
+      label: Third-party firmware source
+      description: If you selected "Third-party provider" above, specify the exact source. Otherwise, enter "N/A".
+      placeholder: "For example: a GitHub repository, forum link, or firmware package provided by a seller"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: config-modified
+    attributes:
+      label: Was the configuration modified?
+      description: Indicate whether you changed the configuration from the default or officially recommended setup.
+      options:
+        - "No"
+        - "Yes"
+    validations:
+      required: true
+
+  - type: textarea
+    id: config-changes
+    attributes:
+      label: What configuration changes were made?
+      description: If you selected "Yes" above, describe which configuration items or files were changed and why. Otherwise, enter "N/A".
+      placeholder: |
+        For example:
+        - Modified the bed PID parameters in printer.cfg
+        - Adjusted stepper motor current
+        - Added custom macros
+    validations:
+      required: true
+
+  - type: dropdown
+    id: source-modified
+    attributes:
+      label: Was the source code modified?
+      description: Indicate whether you made any changes to the firmware source code.
+      options:
+        - "No"
+        - "Yes"
+    validations:
+      required: true
+
+  - type: textarea
+    id: source-changes
+    attributes:
+      label: What source code changes were made?
+      description: If you selected "Yes" above, describe which modules, files, or features were modified. Otherwise, enter "N/A".
+      placeholder: |
+        For example:
+        - Modified the temperature control logic
+        - Adjusted motion control parameter handling
+        - Added custom commands
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: How can the issue be reproduced?
+      description: Describe the exact steps required to reproduce the problem reliably.
+      placeholder: |
+        1. Start the device
+        2. Run a specific G-code command or operation
+        3. Observe the issue
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-result
+    attributes:
+      label: What was the actual result?
+      description: Describe what actually happened.
+      placeholder: "For example: The nozzle temperature fluctuates continuously and triggers an error"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-result
+    attributes:
+      label: What was the expected result?
+      description: Describe what you expected to happen instead.
+      placeholder: "For example: The nozzle should heat to the target temperature steadily and printing should start normally"
+    validations:
+      required: true
+
+  - type: textarea
+    id: log-files
+    attributes:
+      label: Log files
+      description: |
+        Please upload the relevant log files. You can drag and drop attachments directly into this field.
+        It is recommended to include the complete log covering the time before, during, and after the issue occurred.
+      placeholder: Drag and drop log files here, or paste relevant log content.
+    validations:
+      required: true

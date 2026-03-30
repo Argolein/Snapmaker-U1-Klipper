@@ -1,11 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Contact Directions
-    url: https://www.klipper3d.org/Contact.html
-    about: Have a question? Need help? Start here.
-  - name: Klipper Forum
-    url: https://community.klipper3d.org/
-    about: Klipper community Discourse server.
-  - name: Klipper Chat
-    url: https://discord.klipper3d.org/
-    about: Klipper community Discord chat server.
+  - name: Technical Issues
+    url: https://snapmaker.formcrafts.com/u1-troubleshooting-request
+    about: For trickier problems, you can submit a support request here
