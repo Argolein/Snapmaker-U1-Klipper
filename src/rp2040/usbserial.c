@@ -407,3 +407,12 @@ usbserial_init(void)
                         | USB_SIE_CTRL_PULLUP_EN_BITS);
 }
 DECL_INIT(usbserial_init);
+
+// Satisfy vendor-specific call from src/generic/usb_cdc.c
+// stubbed to allow 4rp2040 MCU FW for Snapmaker U1
+void
+usb_clear_stall(uint32_t ep, int is_in)
+{
+    (void)ep;
+    (void)is_in;
+}
