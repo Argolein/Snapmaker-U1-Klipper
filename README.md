@@ -9,6 +9,64 @@ Klipper is a 3d-Printer firmware. It combines the power of a general purpose com
 
 Klipper is Free Software. See the [license](COPYING) or read the [documentation](https://www.klipper3d.org/Overview.html).
 
+## Custom U1 Image Build
+
+This repository can now build a complete Snapmaker U1 host firmware image on top of the official `1.2.0.106` release. The current `extended` profile includes the selected imported features from the paxx12 Extended Firmware work:
+
+- OEM disk usage support in Moonraker
+- Remote Screen
+- Extended config include support
+- `curl`
+- IPv6 disable
+- Camera FPS / `v4l2-mpp` integration
+- USB Ethernet support, including Realtek USB NIC firmware files
+
+### Prerequisites
+
+- Docker Desktop or another working Docker daemon
+- An ARM64-capable Docker environment
+
+The image builder chroots into the extracted U1 root filesystem, so the Dockerized path is the supported build route.
+
+### Build Commands
+
+```bash
+./dev.sh make tools
+./dev.sh make firmware
+./dev.sh make build PROFILE=extended
+```
+
+Useful inspection commands:
+
+```bash
+./dev.sh make extract PROFILE=extended
+make overlays PROFILE=extended
+```
+
+### Build Outputs
+
+- Full packed firmware: `firmware/firmware.bin`
+- Rebuilt Rockchip upgrade image: `tmp/firmware/update.img`
+- Rebuilt rootfs for inspection: `tmp/firmware/rootfs/`
+
+### Flashing
+
+For development, the repository now has a verified build path for the SoC image. The on-device upgrade script extracted from the official firmware supports these commands:
+
+```bash
+scp tmp/firmware/update.img root@<u1-ip>:/tmp/
+ssh root@<u1-ip> /home/lava/bin/systemUpgrade.sh upgrade soc /tmp/update.img
+```
+
+The same upgrade script also advertises a full-UPFILE path:
+
+```bash
+scp firmware/firmware.bin root@<u1-ip>:/tmp/upgrade.bin
+ssh root@<u1-ip> /home/lava/bin/systemUpgrade.sh upgrade all /tmp/upgrade.bin
+```
+
+The software-side build and repack flow is validated in this repository. Hardware flashing and feature verification on a real printer are still pending.
+
 ## Development
 
 ### Host Software

@@ -1,0 +1,45 @@
+links:
+  remote-screen:
+    url: /screen
+    icon: "🖥️"
+    label: Remote Screen
+    condition:
+      setting: remote-screen
+      value: "true"
+
+settings:
+  web:
+    items:
+      remote-screen:
+        label: Remote Screen
+        description: Stream the printer touchscreen to the browser.
+        get_cmd:
+          - /usr/local/bin/extended-config.py
+          - get
+          - /home/lava/printer_data/config/extended/extended.cfg
+          - web
+          - remote_screen
+          - "true"
+        options:
+          "true":
+            label: Enabled
+            cmd:
+              - bash
+              - -xc
+              - |
+                /usr/local/bin/extended-config.py add /home/lava/printer_data/config/extended/extended.cfg web remote_screen true &&
+                /usr/local/bin/extended-config.py uncomment /home/lava/printer_data/config/extended/moonraker/04_remote_screen.cfg "webcam gui" &&
+                /usr/local/bin/extended-config.py update /home/lava/printer_data/config/extended/moonraker/04_remote_screen.cfg "webcam gui" enabled true &&
+                /etc/init.d/S99fb-http restart &&
+                /etc/init.d/S61moonraker restart
+          "false":
+            label: Disabled
+            cmd:
+              - bash
+              - -xc
+              - |
+                /usr/local/bin/extended-config.py add /home/lava/printer_data/config/extended/extended.cfg web remote_screen false &&
+                /usr/local/bin/extended-config.py comment /home/lava/printer_data/config/extended/moonraker/04_remote_screen.cfg "webcam gui" &&
+                /etc/init.d/S99fb-http restart &&
+                /etc/init.d/S61moonraker restart
+        default: "true"

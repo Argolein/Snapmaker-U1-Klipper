@@ -1,0 +1,52 @@
+#!/bin/sh
+
+set -eu
+
+is_random_mac() {
+  case "$1" in
+    [0-9a-fA-F][0-9a-fA-F]:*)
+      first_octet="${1%%:*}"
+      first_octet_value=$((0x$first_octet))
+      [ $((first_octet_value & 0x02)) -ne 0 ] && [ $((first_octet_value & 0x01)) -eq 0 ]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+ifname="${1:-}"
+action="${2:-}"
+state_dir="/oem/network"
+state_file="$state_dir/${ifname}-mac"
+
+if [ -z "$ifname" ] || [ -z "$action" ]; then
+  echo "Usage: $0 <ifname> {save|restore}" >&2
+  exit 1
+fi
+
+if [ ! -d "/sys/class/net/$ifname" ]; then
+  echo "Interface '$ifname' does not exist" >&2
+  exit 1
+fi
+
+current_mac="$(cat "/sys/class/net/$ifname/address" 2>/dev/null || true)"
+saved_mac="$(tr -d '\n' < "$state_file" 2>/dev/null || true)"
+
+case "$action" in
+  save)
+    is_random_mac "$current_mac" || exit 0
+    [ "$saved_mac" = "$current_mac" ] && exit 0
+    mkdir -p "$state_dir"
+    printf '%s\n' "$current_mac" > "$state_file"
+    ;;
+  restore)
+    [ -n "$saved_mac" ] || exit 0
+    is_random_mac "$current_mac" || exit 0
+    [ "$current_mac" = "$saved_mac" ] || /sbin/ip link set dev "$ifname" address "$saved_mac"
+    ;;
+  *)
+    echo "Usage: $0 <ifname> {save|restore}" >&2
+    exit 1
+    ;;
+esac

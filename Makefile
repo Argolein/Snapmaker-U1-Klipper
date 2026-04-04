@@ -10,6 +10,7 @@ OUT=out/
 # Kconfig includes
 export KCONFIG_CONFIG     := $(CURDIR)/.config
 -include $(KCONFIG_CONFIG)
+-include vars.mk
 
 # Common command definitions
 CC=$(CROSS_PREFIX)gcc
@@ -43,6 +44,7 @@ CPPFLAGS = -I$(OUT) -P -MD -MT $@
 
 # Default targets
 target-y := $(OUT)klipper.elf
+IMAGE_ONLY_GOALS := build extract firmware overlays profiles tools
 
 all:
 
@@ -54,6 +56,18 @@ Q=@
 MAKEFLAGS += --no-print-directory
 endif
 
+ifneq ($(MAKECMDGOALS),)
+ifneq (,$(filter-out $(IMAGE_ONLY_GOALS),$(MAKECMDGOALS)))
+NEED_MCU_CONTEXT := 1
+endif
+else
+NEED_MCU_CONTEXT := 1
+endif
+
+.PHONY : build extract firmware overlays profiles tools FORCE
+.DELETE_ON_ERROR:
+
+ifdef NEED_MCU_CONTEXT
 # Include board specific makefile
 include src/Makefile
 -include src/$(patsubst "%",%,$(CONFIG_BOARD_DIRECTORY))/Makefile
@@ -119,8 +133,7 @@ menuconfig:
 ################ Generic rules
 
 # Make definitions
-.PHONY : all clean distclean olddefconfig menuconfig create-board-link FORCE
-.DELETE_ON_ERROR:
+.PHONY : all clean distclean olddefconfig menuconfig create-board-link
 
 all: $(target-y)
 
@@ -129,5 +142,65 @@ clean:
 
 distclean: clean
 	$(Q)rm -f .config .config.old
+endif
 
+################ Image build rules
+
+IMAGE_OUTPUT_FILE ?= firmware/firmware.bin
+IMAGE_BUILD_DIR ?= tmp/firmware
+IMAGE_EXTRACT_DIR ?= tmp/extracted
+IMAGE_PROFILE ?= $(PROFILE)
+IMAGE_PROFILE_MAIN := $(patsubst %-devel,%,$(IMAGE_PROFILE))
+IMAGE_OVERLAYS :=
+
+ifneq (,$(IMAGE_PROFILE))
+IMAGE_OVERLAYS += $(wildcard overlays/common/*/)
+IMAGE_OVERLAYS += $(wildcard overlays/firmware-$(IMAGE_PROFILE_MAIN)/*/)
+ifneq ($(filter %-devel,$(IMAGE_PROFILE)),)
+IMAGE_OVERLAYS += $(wildcard overlays/devel/*/)
+endif
+endif
+
+IMAGE_PROFILES := $(patsubst overlays/firmware-%,%,$(wildcard overlays/firmware-*))
+IMAGE_PROFILES += $(patsubst overlays/firmware-%,%-devel,$(wildcard overlays/firmware-*))
+
+$(IMAGE_OUTPUT_FILE): firmware/$(FIRMWARE_FILE) tools
+ifeq (,$(IMAGE_PROFILE))
+	@echo "Please specify a profile using 'make PROFILE=<profile_name> build'."
+	@echo "Available profiles are: $(IMAGE_PROFILES)."
+	@exit 1
+else ifeq (,$(filter $(IMAGE_PROFILE_MAIN),$(IMAGE_PROFILES)))
+	@echo "Invalid profile '$(IMAGE_PROFILE_MAIN)'. Available profiles are: $(IMAGE_PROFILES)."
+	@exit 1
+endif
+	./scripts/create_firmware.sh $< $(IMAGE_BUILD_DIR) $@ $(IMAGE_OVERLAYS)
+
+build: $(IMAGE_OUTPUT_FILE)
+
+extract: firmware/$(FIRMWARE_FILE) tools
+	./scripts/extract_squashfs.sh $< $(IMAGE_EXTRACT_DIR)
+
+overlays:
+	@echo $(IMAGE_OVERLAYS)
+
+profiles:
+	@echo "Available profiles: $(IMAGE_PROFILES)"
+
+tools: tools/rk2918_tools tools/upfile tools/resource_tool
+
+tools/%: FORCE
+	$(MAKE) -C $@
+
+firmware: firmware/$(FIRMWARE_FILE)
+
+firmware/$(FIRMWARE_FILE):
+	@mkdir -p firmware
+	wget -O $@.tmp "https://public.resource.snapmaker.com/firmware/U1/$(FIRMWARE_FILE)"
+	echo "$(FIRMWARE_SHA256)  $@.tmp" | sha256sum -c --quiet
+	mv $@.tmp $@
+
+FORCE:
+
+ifdef NEED_MCU_CONTEXT
 -include $(OUT)*.d $(patsubst %,$(OUT)%/*.d,$(dirs-y))
+endif

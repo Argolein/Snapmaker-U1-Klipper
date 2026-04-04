@@ -2,7 +2,13 @@ out
 *.o
 *.so
 *.pyc
+__pycache__/
 .config
 .config.old
 .history
 klippy/.version
+.DS_Store
+.claude/
+ausgabe.md
+firmware/
+tmp/
