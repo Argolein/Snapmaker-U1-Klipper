@@ -14,6 +14,23 @@ CONFIG_FILES=(
   fluidd.cfg
   xyz_offset_calibration.cfg
 )
+HOST_FILE_MAPPINGS=(
+  "klippy/toolhead.py:home/lava/klipper/klippy/toolhead.py"
+)
+
+install_preserve_target() {
+  local source_file="$1"
+  local target_file="$2"
+
+  if [[ -f "$target_file" ]]; then
+    install -m "$(stat -c '%a' "$target_file")" \
+      -o "$(stat -c '%u' "$target_file")" \
+      -g "$(stat -c '%g' "$target_file")" \
+      "$source_file" "$target_file"
+  else
+    install -D -m 600 "$source_file" "$target_file"
+  fi
+}
 
 if [[ ! -d "$SOURCE_DIR" ]]; then
   echo ">> Repo lava config directory not present, skipping sync"
@@ -31,14 +48,24 @@ for config_name in "${CONFIG_FILES[@]}"; do
     continue
   fi
 
-  if [[ -f "$target_file" ]]; then
-    install -m "$(stat -c '%a' "$target_file")" \
-      -o "$(stat -c '%u' "$target_file")" \
-      -g "$(stat -c '%g' "$target_file")" \
-      "$source_file" "$target_file"
-  else
-    install -m 600 "$source_file" "$target_file"
-  fi
+  install_preserve_target "$source_file" "$target_file"
 
   echo "   - synced $config_name"
+done
+
+echo ">> Syncing selected repo-owned Klipper host files into /home/lava/klipper"
+
+for mapping in "${HOST_FILE_MAPPINGS[@]}"; do
+  source_rel="${mapping%%:*}"
+  target_rel="${mapping#*:}"
+  source_file="$ROOT_DIR/$source_rel"
+  target_file="$ROOTFS_DIR/$target_rel"
+
+  if [[ ! -f "$source_file" ]]; then
+    echo "   - skipping missing $source_rel"
+    continue
+  fi
+
+  install_preserve_target "$source_file" "$target_file"
+  echo "   - synced $source_rel"
 done

@@ -128,6 +128,8 @@ The user approved importing the minimal support layers required by the chosen fe
   - required because Remote Screen now installs `remote-screen.conf` and `auth-check.conf` under `/etc/nginx/fluidd.d/`
 - `common/05-persist-dhcp`
   - required so DHCP lease state survives reboots for USB ethernet
+- `common/07-persist-ssh-hostkeys`
+  - required so enabling official SSH on the printer keeps a stable host key across reboots
 - `ccde0b8`
   - required for broader USB NIC compatibility
 
@@ -469,16 +471,17 @@ The current build uses this order:
 1. `overlays/common/04-nginx-fluidd.d/`
 2. `overlays/common/05-persist-dhcp/`
 3. `overlays/common/06-persist-eth0-mac/`
-4. `overlays/firmware-extended/01-repo-host-sync/`
-5. `overlays/firmware-extended/02-firmware-config/`
-6. `overlays/firmware-extended/14-patch-firmware-files/`
-7. `overlays/firmware-extended/20-disable-ipv6/`
-8. `overlays/firmware-extended/21-add-curl/`
-9. `overlays/firmware-extended/22-patch-moonraker/`
-10. `overlays/firmware-extended/23-usb-ethernet/`
-11. `overlays/firmware-extended/33-feature-timelapse-stub/`
-12. `overlays/firmware-extended/60-app-camera/`
-13. `overlays/firmware-extended/61-app-remote-screen/`
+4. `overlays/common/07-persist-ssh-hostkeys/`
+5. `overlays/firmware-extended/01-repo-host-sync/`
+6. `overlays/firmware-extended/02-firmware-config/`
+7. `overlays/firmware-extended/14-patch-firmware-files/`
+8. `overlays/firmware-extended/20-disable-ipv6/`
+9. `overlays/firmware-extended/21-add-curl/`
+10. `overlays/firmware-extended/22-patch-moonraker/`
+11. `overlays/firmware-extended/23-usb-ethernet/`
+12. `overlays/firmware-extended/33-feature-timelapse-stub/`
+13. `overlays/firmware-extended/60-app-camera/`
+14. `overlays/firmware-extended/61-app-remote-screen/`
 
 ### 6. Build outputs to inspect
 
@@ -576,6 +579,7 @@ Only after the SoC-only path is confirmed should `firmware.bin` / `upgrade all` 
    - New U1-specific behavior should land here first.
    - If porting from upstream or mainline Klipper, import only the minimum required deltas and keep them isolated in repo-owned overlays or clearly scoped source changes.
    - Re-check interactions with the Snapmaker base image and existing imported features before flashing.
+   - When a host-side Klipper source file is changed, make sure the image build copies that file into `/home/lava/klipper` and record the upstream commit reference when one exists.
 3. Re-run:
    - `./dev.sh make build PROFILE=extended`
 4. Inspect:
@@ -604,6 +608,7 @@ Only after the SoC-only path is confirmed should `firmware.bin` / `upgrade all` 
   - [x] Import `common/04-nginx-fluidd.d`
   - [x] Import `common/05-persist-dhcp`
   - [x] Import `common/06-persist-eth0-mac`
+  - [x] Import `common/07-persist-ssh-hostkeys`
   - [x] Import USB NIC firmware blob support from `ccde0b8`
   - [x] Add a repo-owned host-sync overlay
   - [x] Import `timelapse` compatibility stub to avoid Moonraker/Fluidd plugin warnings with the stock `[timelapse]` printer config
@@ -624,6 +629,8 @@ Only after the SoC-only path is confirmed should `firmware.bin` / `upgrade all` 
   - [x] Set Remote Screen defaults to enabled in the repo-owned `extended.cfg` and default Moonraker fragment for future fresh configs
   - [x] Rename the runtime config from `extended2.cfg` to `extended.cfg` and add one-time migration logic for existing printers
   - [x] Rebuild `firmware/firmware.bin` after enabling Remote Screen defaults and fixing the `timelapse` stub
+  - [x] Patch `klippy/toolhead.py` to use `LOOKAHEAD_FLUSH_TIME = 0.150` and extend host-sync so the modified host file is copied into the firmware image
+  - [x] Persist Dropbear host keys in `/oem/dropbear` so the official SSH feature keeps a stable host key across reboots
   - [x] Full build/repack verification complete with `./dev.sh make build PROFILE=extended`
 - [x] Phase 6: end-to-end validation
   - [x] Final firmware image builds from this repo: `firmware/firmware.bin`
@@ -669,10 +676,11 @@ Only after the SoC-only path is confirmed should `firmware.bin` / `upgrade all` 
   - Renamed the runtime config path from `extended2.cfg` to `extended.cfg` across the imported feature set
   - Added first-boot migration from `extended2.cfg` to `extended.cfg` for existing printers and rebuilt the firmware image
   - Flashed the resulting firmware to a real U1 and validated the selected features on hardware
+  - Added `common/07-persist-ssh-hostkeys` and rebuilt the image so Dropbear host keys are persisted in `/oem/dropbear`
 - Stopped at:
-  - End-to-end implementation, build, flash, and feature validation are complete
+  - New image build is complete; SSH host key persistence still needs one hardware reboot check on the printer
 - Next step:
-  - Use this repo as the source of truth for future feature work and regression checks against new Snapmaker base firmware releases
+  - Flash the rebuilt image, reboot once, and confirm the SSH host key no longer changes between boots
 - Open blockers:
   - none
 - Decisions made this session:
@@ -688,3 +696,7 @@ Only after the SoC-only path is confirmed should `firmware.bin` / `upgrade all` 
 - Camera support currently depends on an external pinned `v4l2-mpp` build
 - The imported plan should preserve minimality: only the selected 7 features plus their required support layers belong in scope
 - This repo is now the working base for future U1 development, including selective ports from mainline Klipper, as long as U1-specific integration remains reviewable and isolated
+- Mainline Klipper reference for the lookahead flush change: `16fc46fe5ff0dbbc5188ee6a7829eee5976c1eb9` (`toolhead: Reduce LOOKAHEAD_FLUSH_TIME to 0.150 seconds`, 2025-09-30)
+- Official SSH remains enabled through the stock Snapmaker UI path; this repo only persists Dropbear host keys into `/oem/dropbear` so the client host key stays stable across reboots
+  - Implementation detail: boot now rewires `/etc/dropbear` to `/oem/dropbear` before any SSH startup path runs, instead of patching Snapmaker's SSH activation flow
+  - The boot hook must be shipped as `S49persist-dropbear-hostkeys.sh` so BusyBox `rcS` sources it even if overlay file modes are not executable
