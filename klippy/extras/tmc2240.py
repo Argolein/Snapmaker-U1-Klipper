@@ -57,7 +57,8 @@ Registers = {
 
 ReadRegisters = [
     "GCONF", "GSTAT", "IOIN", "DRV_CONF", "GLOBALSCALER", "IHOLD_IRUN",
-    "TPOWERDOWN", "TSTEP", "TPWMTHRS", "TCOOLTHRS", "THIGH", "ADC_VSUPPLY_AIN",
+    "TPOWERDOWN", "TSTEP", "TPWMTHRS", "TCOOLTHRS", "THIGH", "DIRECT_MODE",
+    "ADC_VSUPPLY_AIN",
     "ADC_TEMP", "MSCNT", "MSCURACT", "CHOPCONF", "COOLCONF", "DRV_STATUS",
     "PWMCONF", "PWM_SCALE", "PWM_AUTO", "SG4_THRS", "SG4_RESULT", "SG4_IND"
 ]
@@ -225,6 +226,10 @@ Fields["DRV_CONF"] = {
     "current_range":            0x03 << 0,
     "slope_control":            0x03 << 4
 }
+Fields["DIRECT_MODE"] = {
+    "coil_a":                   0x1ff << 0,
+    "coil_b":                   0x1ff << 16
+}
 Fields["ADC_VSUPPLY_AIN"] = {
     "adc_vsupply":              0x1fff << 0,
     "adc_ain":                  0x1fff << 16
@@ -252,7 +257,8 @@ Fields["SG4_IND"] = {
 }
 
 
-SignedFields = ["cur_a", "cur_b", "sgt", "pwm_scale_auto", "offset_sin90"]
+SignedFields = ["cur_a", "cur_b", "coil_a", "coil_b", "sgt",
+                "pwm_scale_auto", "offset_sin90"]
 
 FieldFormatters = dict(tmc2130.FieldFormatters)
 FieldFormatters.update({

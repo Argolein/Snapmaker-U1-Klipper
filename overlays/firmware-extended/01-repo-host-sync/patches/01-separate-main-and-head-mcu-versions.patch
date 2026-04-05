@@ -1,0 +1,147 @@
+--- a/home/lava/bin/systemUpgrade.sh
++++ b/home/lava/bin/systemUpgrade.sh
+@@ -17,7 +17,9 @@ PRINT_HEAD_MCU_PRODUCT_DFU_MODE=df11
+ MAIN_MCU_FIRMWARE_DEFAULT_PATH=/home/lava/firmware_MCU/at32f403a.bin
+ PRINT_HEAD_MCU_FIRMWARE_DEFAULT_PATH=/home/lava/firmware_MCU/at32f415.bin
+ MCU_FIRMWARE_MD5SUM_FILE=/home/lava/firmware_MCU/md5sum.txt
+-MCU_FIRMWARE_VERSION_FILE=/home/lava/firmware_MCU/VERSION
++LEGACY_MCU_FIRMWARE_VERSION_FILE=/home/lava/firmware_MCU/VERSION
++MAIN_MCU_FIRMWARE_VERSION_FILE=/home/lava/firmware_MCU/VERSION_MAIN
++HEAD_MCU_FIRMWARE_VERSION_FILE=/home/lava/firmware_MCU/VERSION_HEAD
+ 
+ MCU_DEBUG_VERSION_NUMBER="00000000000000-0000000000"
+ 
+@@ -144,10 +146,35 @@ get_mcu_version()
+ 	esac
+ }
+ 
++get_expected_mcu_version()
++{
++	mcu=$1
++
++	case $mcu in
++		mcu0)
++			version_file="$MAIN_MCU_FIRMWARE_VERSION_FILE"
++			;;
++		head0|head1|head2|head3)
++			version_file="$HEAD_MCU_FIRMWARE_VERSION_FILE"
++			;;
++		*)
++			version_file="$LEGACY_MCU_FIRMWARE_VERSION_FILE"
++			;;
++	esac
++
++	if [ -f "$version_file" ] ; then
++		cat "$version_file"
++	elif [ -f "$LEGACY_MCU_FIRMWARE_VERSION_FILE" ] ; then
++		cat "$LEGACY_MCU_FIRMWARE_VERSION_FILE"
++	else
++		echo "unknown"
++	fi
++}
++
+ get_unmatch()
+ {
+ 	failed_list=""
+-	version_store=$(cat ${MCU_FIRMWARE_VERSION_FILE})
++	version_store=$(get_expected_mcu_version mcu0)
+ 
+ 	main_mcu_version=$(get_mcu_version mcu0)
+ 	if [ x"$main_mcu_version" != x"$version_store" ] ; then
+@@ -157,6 +184,7 @@ get_unmatch()
+ 	head_mcu_list="head0 head1 head2 head3"
+ 	for head in $head_mcu_list ; do
+ 		head_mcu_version=$(get_mcu_version $head)
++		version_store=$(get_expected_mcu_version $head)
+ 		if [ x"$head_mcu_version" != x"$version_store" ] ; then
+ 			failed_list="${failed_list} ${head}"
+ 		fi
+@@ -177,13 +205,13 @@ revert()
+ 	echo "${LOG_PREFIX} ${FUNCNAME[0]}: Need to revert: $mcu_list."
+ 
+ 	retry_max=3
+-	mcu_version_old=$(head -n 1 $MCU_FIRMWARE_VERSION_FILE)
+ 
+ 	# Only revert MCU firmware, do not check
+ 	for mcu in $mcu_list ; do
+ 		case $mcu in
+ 			mcu0)
+ 				for i in $(seq 1 $retry_max) ; do
++					mcu_version_old=$(get_expected_mcu_version mcu0)
+ 					# Debug version, do not upgrade
+ 					main_mcu_version=$(get_mcu_version mcu0)
+ 					if [ x"$main_mcu_version" == x"$MCU_DEBUG_VERSION_NUMBER" ] ; then
+@@ -211,6 +239,7 @@ revert()
+ 				;;
+ 			head0|head1|head2|head3)
+ 				for i in $(seq 1 $retry_max) ; do
++					mcu_version_old=$(get_expected_mcu_version $mcu)
+ 					head_mcu_version=$(get_mcu_version $mcu)
+ 					# This print head MCU offline, do not upgrade
+ 					if [ x"$head_mcu_version" == x"unknown" ] ; then
+@@ -308,8 +337,9 @@ upgrade_all()
+ 	# Check whether the MCU is upgraded successfully
+ 	revert_mcu_list=""
+ 	retry_max=3
+-	mcu_version_new=$(head -n 1 ${UPGRADE_UNPACK_TMP_DIR}/MCU_DESC)
+-	mcu_version_old=$(head -n 1 $MCU_FIRMWARE_VERSION_FILE)
++	main_mcu_version_new=$(head -n 1 ${UPGRADE_UNPACK_TMP_DIR}/MCU_DESC)
++	main_mcu_version_old=$(get_expected_mcu_version mcu0)
++	head_mcu_version_new=$(get_expected_mcu_version head0)
+ 
+ 	echo "${LOG_PREFIX} ${FUNCNAME[0]}: Prepare to upgrade MCU0."
+ 	have_failure="Yes"
+@@ -325,7 +355,7 @@ upgrade_all()
+ 				break
+ 			fi
+ 		done
+-		if [ x"$mcu_version_new" == x"$main_mcu_version" ] ; then
++		if [ x"$main_mcu_version_new" == x"$main_mcu_version" ] ; then
+ 			have_failure="No"
+ 			# Add the successful MCU
+ 			revert_mcu_list="mcu0"
+@@ -378,7 +408,7 @@ upgrade_all()
+ 					break
+ 				fi
+ 			done
+-			if [ x"$mcu_version_new" == x"$head_mcu_version" ] ; then
++			if [ x"$head_mcu_version_new" == x"$head_mcu_version" ] ; then
+ 				have_failure="No"
+ 				# Add this successful MCU
+ 				revert_mcu_list="$revert_mcu_list $head"
+@@ -497,7 +527,7 @@ upgrade_main_mcu()
+ 
+ 		if [ x"$option" == x"--check" ] ; then
+ 			version_old=$(get_mcu_version mcu0)
+-			version_new=$(cat ${MCU_FIRMWARE_VERSION_FILE})
++			version_new=$(get_expected_mcu_version mcu0)
+ 			if [ x"$version_new" == x"$version_old" ] ; then
+ 				echo "${LOG_PREFIX} ${FUNCNAME[0]}: The old and new version are the same, do not upgrade."
+ 				safe_exit 1
+@@ -545,7 +575,7 @@ upgrade_main_mcu()
+ 	if [ x"$option" == x"--check" -o x"$option" == x"--force" ] ; then
+ 		sleep 5
+ 		version_current=$(get_mcu_version mcu0)
+-		version_store=$(cat ${MCU_FIRMWARE_VERSION_FILE})
++		version_store=$(get_expected_mcu_version mcu0)
+ 		if [ x"$version_current" != x"$version_store" ] ; then
+ 			echo "${LOG_PREFIX} The new version number $version_current is incorrect, please check."
+ 			safe_exit 2
+@@ -574,7 +604,7 @@ upgrade_head_mcu()
+ 
+ 		if [ x"$option" == x"--check" ] ; then
+ 			version_old=$(get_mcu_version $mcu)
+-			version_new=$(cat ${MCU_FIRMWARE_VERSION_FILE})
++			version_new=$(get_expected_mcu_version $mcu)
+ 			if [ x"$version_new" == x"$version_old" ] ; then
+ 				echo "${LOG_PREFIX} ${FUNCNAME[0]}: The old and new version are the same, do not upgrade."
+ 				safe_exit 1
+@@ -664,7 +694,7 @@ upgrade_head_mcu()
+ 	if [ x"$option" == x"--check" -o x"$option" == x"--force" ] ; then
+ 		sleep 5
+ 		version_current=$(get_mcu_version $mcu)
+-		version_store=$(cat ${MCU_FIRMWARE_VERSION_FILE})
++		version_store=$(get_expected_mcu_version $mcu)
+ 		if [ x"$version_current" != x"$version_store" ] ; then
+ 			echo "The new version number $version_current is incorrect, please check."
+ 			safe_exit 2

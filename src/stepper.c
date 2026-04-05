@@ -39,6 +39,12 @@ struct stepper_move {
 };
 
 enum { MF_DIR=1<<0 };
+enum { DEBUG_EXEC_TRACE_MAX = 64 };
+
+struct stepper_exec_sample {
+    uint32_t step_clock;
+    uint32_t step_number;
+};
 
 struct stepper {
     struct timer time;
@@ -52,6 +58,19 @@ struct stepper {
     uint32_t next_step_time, step_pulse_ticks;
     struct gpio_out step_pin, dir_pin;
     uint32_t position;
+    uint32_t debug_queue_msgs;
+    uint32_t debug_load_next;
+    uint32_t debug_timer_events;
+    uint32_t debug_total_steps;
+    uint16_t debug_max_chunk;
+    uint16_t debug_exec_trace_stride;
+    uint16_t debug_exec_trace_count;
+    uint32_t debug_exec_next_sample;
+    uint32_t debug_exec_first_clock;
+    uint32_t debug_exec_last_clock;
+    uint32_t debug_exec_min_interval;
+    uint32_t debug_exec_max_interval;
+    struct stepper_exec_sample debug_exec_trace[DEBUG_EXEC_TRACE_MAX];
     struct move_queue_head mq;
     struct trsync_signal stop_signal;
     // gcc (pre v6) does better optimization when uint8_t are bitfields
@@ -64,6 +83,66 @@ enum {
     SF_LAST_DIR=1<<0, SF_NEXT_DIR=1<<1, SF_INVERT_STEP=1<<2, SF_NEED_RESET=1<<3,
     SF_SINGLE_SCHED=1<<4, SF_HAVE_ADD=1<<5
 };
+
+static uint32_t
+stepper_queue_depth(struct stepper *s)
+{
+    uint32_t depth = 0;
+    struct move_node *mn = move_queue_first(&s->mq);
+    while (mn) {
+        depth++;
+        mn = mn->next;
+    }
+    return depth;
+}
+
+static void
+stepper_debug_reset(struct stepper *s)
+{
+    s->debug_queue_msgs = 0;
+    s->debug_load_next = 0;
+    s->debug_timer_events = 0;
+    s->debug_total_steps = 0;
+    s->debug_max_chunk = 0;
+    s->debug_exec_trace_count = 0;
+    s->debug_exec_next_sample = 0;
+    s->debug_exec_first_clock = 0;
+    s->debug_exec_last_clock = 0;
+    s->debug_exec_min_interval = 0;
+    s->debug_exec_max_interval = 0;
+}
+
+static void
+stepper_debug_note_exec(struct stepper *s, uint32_t step_clock)
+{
+    uint16_t stride = s->debug_exec_trace_stride;
+    if (!stride)
+        return;
+    uint32_t total_steps = s->debug_total_steps;
+    if (!total_steps)
+        return;
+    uint32_t step_number = total_steps - 1;
+    if (!s->debug_exec_trace_count) {
+        s->debug_exec_first_clock = step_clock;
+        s->debug_exec_last_clock = step_clock;
+    } else {
+        uint32_t interval = step_clock - s->debug_exec_last_clock;
+        if (!s->debug_exec_min_interval || interval < s->debug_exec_min_interval)
+            s->debug_exec_min_interval = interval;
+        if (interval > s->debug_exec_max_interval)
+            s->debug_exec_max_interval = interval;
+        s->debug_exec_last_clock = step_clock;
+    }
+    if (step_number < s->debug_exec_next_sample)
+        return;
+    if (s->debug_exec_trace_count < DEBUG_EXEC_TRACE_MAX) {
+        struct stepper_exec_sample *sample;
+        sample = &s->debug_exec_trace[s->debug_exec_trace_count++];
+        sample->step_clock = step_clock;
+        sample->step_number = step_number;
+    }
+    s->debug_exec_next_sample = step_number + stride;
+}
 
 // Setup a stepper for the next move in its queue
 static uint_fast8_t
@@ -78,6 +157,9 @@ stepper_load_next(struct stepper *s)
     // Load next 'struct stepper_move' into 'struct stepper'
     struct move_node *mn = move_queue_pop(&s->mq);
     struct stepper_move *m = container_of(mn, struct stepper_move, node);
+    s->debug_load_next++;
+    if (m->count > s->debug_max_chunk)
+        s->debug_max_chunk = m->count;
     s->add = m->add;
     s->interval = m->interval + m->add;
     if (HAVE_SINGLE_SCHEDULE && s->flags & SF_SINGLE_SCHED) {
@@ -110,6 +192,9 @@ uint_fast8_t
 stepper_event_edge(struct timer *t)
 {
     struct stepper *s = container_of(t, struct stepper, time);
+    s->debug_timer_events++;
+    s->debug_total_steps++;
+    stepper_debug_note_exec(s, timer_read_time());
     gpio_out_toggle_noirq(s->step_pin);
     uint32_t count = s->count - 1;
     if (likely(count)) {
@@ -128,6 +213,9 @@ static uint_fast8_t
 stepper_event_avr(struct timer *t)
 {
     struct stepper *s = container_of(t, struct stepper, time);
+    s->debug_timer_events++;
+    s->debug_total_steps++;
+    stepper_debug_note_exec(s, timer_read_time());
     gpio_out_toggle_noirq(s->step_pin);
     uint16_t *pcount = (void*)&s->count, count = *pcount - 1;
     if (likely(count)) {
@@ -148,6 +236,12 @@ uint_fast8_t
 stepper_event_full(struct timer *t)
 {
     struct stepper *s = container_of(t, struct stepper, time);
+    uint32_t current_count = s->count;
+    s->debug_timer_events++;
+    if (!(current_count & 1)) {
+        s->debug_total_steps++;
+        stepper_debug_note_exec(s, timer_read_time());
+    }
     gpio_out_toggle_noirq(s->step_pin);
     uint32_t curtime = timer_read_time();
     uint32_t min_next_time = curtime + s->step_pulse_ticks;
@@ -242,6 +336,9 @@ command_queue_step(uint32_t *args)
     m->line = args[4];
 
     irq_disable();
+    s->debug_queue_msgs++;
+    if (m->count > s->debug_max_chunk)
+        s->debug_max_chunk = m->count;
     uint8_t flags = s->flags;
     if (!!(flags & SF_LAST_DIR) != !!(flags & SF_NEXT_DIR)) {
         flags ^= SF_LAST_DIR;
@@ -262,6 +359,98 @@ command_queue_step(uint32_t *args)
 }
 DECL_COMMAND(command_queue_step,
              "queue_step oid=%c interval=%u count=%hu add=%hi line=%u");
+
+void
+command_stepper_runtime_reset(uint32_t *args)
+{
+    struct stepper *s = stepper_oid_lookup(args[0]);
+    irq_disable();
+    s->debug_exec_trace_stride = 0;
+    stepper_debug_reset(s);
+    irq_enable();
+}
+DECL_COMMAND(command_stepper_runtime_reset, "stepper_runtime_reset oid=%c");
+
+void
+command_stepper_runtime_query(uint32_t *args)
+{
+    uint8_t oid = args[0];
+    struct stepper *s = stepper_oid_lookup(oid);
+    uint32_t queue_msgs, load_next, timer_events, total_steps, queued_moves;
+    uint16_t max_chunk;
+    irq_disable();
+    queue_msgs = s->debug_queue_msgs;
+    load_next = s->debug_load_next;
+    timer_events = s->debug_timer_events;
+    total_steps = s->debug_total_steps;
+    max_chunk = s->debug_max_chunk;
+    queued_moves = stepper_queue_depth(s);
+    irq_enable();
+    sendf("stepper_runtime_state oid=%c queue_msgs=%u load_next=%u"
+          " timer_events=%u total_steps=%u max_chunk=%hu queued_moves=%u",
+          oid, queue_msgs, load_next, timer_events, total_steps,
+          max_chunk, queued_moves);
+}
+DECL_COMMAND(command_stepper_runtime_query, "stepper_runtime_query oid=%c");
+
+void
+command_stepper_exec_trace_reset(uint32_t *args)
+{
+    struct stepper *s = stepper_oid_lookup(args[0]);
+    irq_disable();
+    s->debug_exec_trace_stride = args[1];
+    stepper_debug_reset(s);
+    irq_enable();
+}
+DECL_COMMAND(command_stepper_exec_trace_reset,
+             "stepper_exec_trace_reset oid=%c stride=%hu");
+
+void
+command_stepper_exec_trace_query(uint32_t *args)
+{
+    uint8_t oid = args[0];
+    struct stepper *s = stepper_oid_lookup(oid);
+    uint32_t total_steps, first_clock, last_clock, min_interval, max_interval;
+    uint16_t stride, count;
+    irq_disable();
+    stride = s->debug_exec_trace_stride;
+    count = s->debug_exec_trace_count;
+    total_steps = s->debug_total_steps;
+    first_clock = s->debug_exec_first_clock;
+    last_clock = s->debug_exec_last_clock;
+    min_interval = s->debug_exec_min_interval;
+    max_interval = s->debug_exec_max_interval;
+    irq_enable();
+    sendf("stepper_exec_trace_state oid=%c stride=%hu count=%hu"
+          " total_steps=%u first_clock=%u last_clock=%u"
+          " min_interval=%u max_interval=%u",
+          oid, stride, count, total_steps, first_clock, last_clock,
+          min_interval, max_interval);
+}
+DECL_COMMAND(command_stepper_exec_trace_query,
+             "stepper_exec_trace_query oid=%c");
+
+void
+command_stepper_exec_trace_sample(uint32_t *args)
+{
+    uint8_t oid = args[0];
+    uint8_t index = args[1];
+    struct stepper *s = stepper_oid_lookup(oid);
+    struct stepper_exec_sample sample;
+    uint16_t count;
+    irq_disable();
+    count = s->debug_exec_trace_count;
+    sample.step_clock = 0;
+    sample.step_number = 0;
+    if (index < count)
+        sample = s->debug_exec_trace[index];
+    irq_enable();
+    sendf("stepper_exec_trace_point oid=%c index=%c step_clock=%u"
+          " step_number=%u",
+          oid, index, sample.step_clock, sample.step_number);
+}
+DECL_COMMAND(command_stepper_exec_trace_sample,
+             "stepper_exec_trace_sample oid=%c index=%c");
 
 // Set the direction of the next queued step
 void

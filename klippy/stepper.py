@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging, collections
+import msgproto
 import chelper
 
 class error(Exception):
@@ -56,6 +57,10 @@ class MCU_stepper:
         self._step_both_edge = self._req_step_both_edge = False
         self._mcu_position_offset = 0.
         self._reset_cmd_tag = self._get_position_cmd = None
+        self._runtime_reset_cmd = self._runtime_query_cmd = None
+        self._exec_trace_reset_cmd = None
+        self._exec_trace_query_cmd = None
+        self._exec_trace_sample_cmd = None
         self._active_callbacks = []
         ffi_main, ffi_lib = chelper.get_ffi()
         self._stepqueue = ffi_main.gc(ffi_lib.stepcompress_alloc(oid),
@@ -63,6 +68,7 @@ class MCU_stepper:
         ffi_lib.stepcompress_set_invert_sdir(self._stepqueue, self._invert_dir)
         self._mcu.register_stepqueue(self._stepqueue)
         self._stepper_kinematics = None
+        self._generate_steps_trace_state = None
         self._itersolve_generate_steps = ffi_lib.itersolve_generate_steps
         self._itersolve_check_active = ffi_lib.itersolve_check_active
         self._trapq = ffi_main.NULL
@@ -114,6 +120,37 @@ class MCU_stepper:
         self._get_position_cmd = self._mcu.lookup_query_command(
             "stepper_get_position oid=%c",
             "stepper_position oid=%c pos=%i", oid=self._oid)
+        self._runtime_reset_cmd = self._mcu.try_lookup_command(
+            "stepper_runtime_reset oid=%c")
+        if self._runtime_reset_cmd is not None:
+            try:
+                self._runtime_query_cmd = self._mcu.lookup_query_command(
+                    "stepper_runtime_query oid=%c",
+                    "stepper_runtime_state oid=%c queue_msgs=%u load_next=%u"
+                    " timer_events=%u total_steps=%u max_chunk=%hu"
+                    " queued_moves=%u",
+                    oid=self._oid)
+            except msgproto.error:
+                self._runtime_reset_cmd = self._runtime_query_cmd = None
+        self._exec_trace_reset_cmd = self._mcu.try_lookup_command(
+            "stepper_exec_trace_reset oid=%c stride=%hu")
+        if self._exec_trace_reset_cmd is not None:
+            try:
+                self._exec_trace_query_cmd = self._mcu.lookup_query_command(
+                    "stepper_exec_trace_query oid=%c",
+                    "stepper_exec_trace_state oid=%c stride=%hu count=%hu"
+                    " total_steps=%u first_clock=%u last_clock=%u"
+                    " min_interval=%u max_interval=%u",
+                    oid=self._oid)
+                self._exec_trace_sample_cmd = self._mcu.lookup_query_command(
+                    "stepper_exec_trace_sample oid=%c index=%c",
+                    "stepper_exec_trace_point oid=%c index=%c step_clock=%u"
+                    " step_number=%u",
+                    oid=self._oid)
+            except msgproto.error:
+                self._exec_trace_reset_cmd = None
+                self._exec_trace_query_cmd = None
+                self._exec_trace_sample_cmd = None
         max_error = self._mcu.get_max_stepper_error()
         max_error_ticks = self._mcu.seconds_to_clock(max_error)
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -176,6 +213,60 @@ class MCU_stepper:
         count = ffi_lib.stepcompress_extract_old(self._stepqueue, data, count,
                                                  start_clock, end_clock)
         return (data, count)
+    def reset_runtime_stats(self):
+        if self._runtime_reset_cmd is None:
+            return False
+        self._runtime_reset_cmd.send([self._oid])
+        return True
+    def query_runtime_stats(self):
+        if self._runtime_query_cmd is None:
+            return {
+                "stepper_name": self.get_name(),
+                "queue_msgs": 0,
+                "load_next": 0,
+                "timer_events": 0,
+                "total_steps": 0,
+                "max_chunk": 0,
+                "queued_moves": 0,
+                "supported": 0,
+            }
+        params = self._runtime_query_cmd.send([self._oid])
+        params["stepper_name"] = self.get_name()
+        params["supported"] = 1
+        return params
+    def reset_execution_trace(self, stride):
+        if self._exec_trace_reset_cmd is None:
+            return False
+        self._exec_trace_reset_cmd.send([self._oid, int(stride)])
+        return True
+    def query_execution_trace(self):
+        if self._exec_trace_query_cmd is None or self._exec_trace_sample_cmd is None:
+            return {
+                "stepper_name": self.get_name(),
+                "supported": 0,
+                "stride": 0,
+                "count": 0,
+                "total_steps": 0,
+                "first_clock": 0,
+                "last_clock": 0,
+                "min_interval": 0,
+                "max_interval": 0,
+                "samples": [],
+            }
+        state = self._exec_trace_query_cmd.send([self._oid])
+        sample_count = int(state["count"])
+        samples = []
+        for index in range(sample_count):
+            sample = self._exec_trace_sample_cmd.send([self._oid, index])
+            samples.append({
+                "index": index,
+                "step_clock": int(sample["step_clock"]),
+                "step_number": int(sample["step_number"]),
+            })
+        state["stepper_name"] = self.get_name()
+        state["supported"] = 1
+        state["samples"] = samples
+        return state
     def get_stepper_kinematics(self):
         return self._stepper_kinematics
     def set_stepper_kinematics(self, sk):
@@ -227,7 +318,24 @@ class MCU_stepper:
         return old_tq
     def add_active_callback(self, cb):
         self._active_callbacks.append(cb)
+    def begin_generate_steps_trace(self, start_flush_time=None):
+        self._generate_steps_trace_state = {
+            "start_flush_time": start_flush_time,
+            "last_flush_time": start_flush_time,
+            "events": [],
+        }
+    def end_generate_steps_trace(self):
+        trace_state = self._generate_steps_trace_state
+        self._generate_steps_trace_state = None
+        if trace_state is None:
+            return []
+        return list(trace_state["events"])
     def generate_steps(self, flush_time):
+        trace_state = self._generate_steps_trace_state
+        if trace_state is not None:
+            trace_prev_flush = trace_state["last_flush_time"]
+            trace_before_cmd = self.get_commanded_position()
+            trace_before_mcu = self.get_mcu_position()
         # Check for activity if necessary
         if self._active_callbacks:
             sk = self._stepper_kinematics
@@ -242,6 +350,20 @@ class MCU_stepper:
         ret = self._itersolve_generate_steps(sk, flush_time)
         if ret:
             raise error("Internal error in stepcompress")
+        if trace_state is not None:
+            trace_after_cmd = self.get_commanded_position()
+            trace_after_mcu = self.get_mcu_position()
+            trace_state["events"].append({
+                "window_start_print_time": (
+                    flush_time if trace_prev_flush is None else trace_prev_flush),
+                "window_end_print_time": flush_time,
+                "before_commanded_position_mm": trace_before_cmd,
+                "after_commanded_position_mm": trace_after_cmd,
+                "before_mcu_position": trace_before_mcu,
+                "after_mcu_position": trace_after_mcu,
+                "generated_steps": trace_after_mcu - trace_before_mcu,
+            })
+            trace_state["last_flush_time"] = flush_time
     def is_active_axis(self, axis):
         ffi_main, ffi_lib = chelper.get_ffi()
         a = axis.encode()

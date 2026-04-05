@@ -76,6 +76,16 @@ The user approved importing the minimal support layers required by the chosen fe
 - **Build environment**: Docker-based ARM64 development environment, following the Extended Firmware model
 - **Feature 3 includes**: placeholder keep files may be kept for clarity, but they are not required to avoid a Klipper wildcard-include error
 - **Camera build model**: `v4l2-mpp` is not a mystery prebuilt binary; the current Extended Firmware builds it from a pinned external git repository during image build
+- **Motor phase runtime gate**: the current printer-side `H2/H4` execution-near gate (`selected_score mean ~0.876`) is good enough to justify the next runtime-nearer prototype, but it is still not a benefit claim
+- **Rejected motor phase paths**: both the host-`dwell()` direct-mode path and the pre-scheduled SPI direct-mode path are rejected as credible benefit-test paths
+- **Next motor phase architecture step**: the next credible runtime step is a dedicated one-motor executor on the mainboard MCU near the executed-step path, not another host/SPI sequencing refinement
+- **Next motor phase executor scope**: keep the first executor limited to `stepper_y @ 30 mm/s`, `baseline_direct_profile` first, then the frozen `H2/H4` correction profile only after baseline smoothness is proven
+- **TMC2240 DIRECT_MODE register format**: register 0x2D; coil_a bits[8:0] 9-bit signed (−255..+255), coil_b bits[24:16] 9-bit signed (−255..+255); SPI write is 5 bytes [0xAD, MSB..LSB]
+- **MCU executor ISR constraint**: spidev_transfer() is blocking; executor timer ISR only sets pending flag and wakes task; DECL_TASK does the actual SPI write
+- **Baseline table location**: ideal sin/cos table (1024 entries) lives in MCU flash as compile-time const; no host upload needed for the baseline-only Phase 3 prototype
+- **Executor SPI OID**: executor uses its own `config_motor_phase_exec`-registered spidev_s OID, not the existing TMC2240 SPI config OID
+- **MCU version checks must stay enabled**: the real fix for the slow reboot/recovery loop is a split version contract (`VERSION_MAIN` for `mcu0`, `VERSION_HEAD` for `head0..head3`), not `/oem/.skip_checking_mcu`
+- **Boot-loop root cause**: `systemUpgrade.sh` originally used one global `/home/lava/firmware_MCU/VERSION` for both the custom main MCU and the stock head MCUs, so `check-restore` kept treating the unchanged heads as mismatched during boot
 
 ---
 
@@ -438,6 +448,9 @@ Run these commands from the repo root:
 ./dev.sh make tools
 ./dev.sh make firmware
 ./dev.sh make build PROFILE=extended
+make CPP=arm-none-eabi-cpp clean
+make CPP=arm-none-eabi-cpp
+install -D -m 755 out/klipper.bin out_at32f403a/at32f403a.bin
 ```
 
 Useful helper commands:
@@ -463,6 +476,11 @@ make overlays PROFILE=extended
    - rebuilds the rootfs
    - repacks `update.img`
    - repacks the final `firmware/firmware.bin`
+4. `make CPP=arm-none-eabi-cpp clean && make CPP=arm-none-eabi-cpp`
+   - builds the mainboard MCU firmware binary at `out/klipper.bin`
+   - `CPP=arm-none-eabi-cpp` is required on macOS (system cpp fails on `.lds.S`)
+5. `install -D -m 755 out/klipper.bin out_at32f403a/at32f403a.bin`
+   - copies the MCU build artifact to the dedicated flash location used in this repo
 
 ### 5. Verified overlay order for `PROFILE=extended`
 
@@ -521,6 +539,18 @@ ssh root@<u1-ip> /home/lava/bin/systemUpgrade.sh upgrade all /tmp/upgrade.bin
 ```
 
 Hardware flashing is still pending validation on a real device. Until that is completed, the build path above is verified, but on-device behavior must still be treated as the final acceptance gate.
+
+3. Mainboard-MCU-only update using the separately built `at32f403a.bin`
+
+```bash
+scp out_at32f403a/at32f403a.bin root@<u1-ip>:/tmp/
+ssh root@<u1-ip> /home/lava/bin/systemUpgrade.sh upgrade mcu0 /tmp/at32f403a.bin
+```
+
+Important:
+- `./dev.sh make build PROFILE=extended` does not rebuild `src/` MCU changes
+- changes under `src/` require the separate root MCU build shown above
+- host/SoC and mainboard MCU are therefore two separate build/flash paths
 
 ### 8a. Recommended first hardware flash procedure
 
@@ -638,57 +668,178 @@ Only after the SoC-only path is confirmed should `firmware.bin` / `upgrade all` 
   - [x] Flash to printer
   - [x] Verify selected features on hardware
   - [x] Document final build/flash workflow
+- [x] Post-import repo planning
+  - [x] Validate `motor-phase-tuning.md` against this repo and the local Prusa reference
+  - [x] Recast `motor-phase-tuning.md` as a feasibility-first plan instead of an implementation-ready task list
+- [ ] Motor phase tuning Phase 0
+  - [x] Add an initial host-side `motor_phase_calibration` Klipper extra
+  - [x] Seed repo config with `[force_move]` and `[motor_phase_calibration]`
+  - [x] Extend `tmc2240.py` with `DIRECT_MODE` `coil_a` / `coil_b` fields for debug experiments
+  - [x] Validate `MOTOR_PHASE_MEASURE` on hardware
+  - [x] Validate `DUMP_TMC` / `SET_TMC_FIELD` direct-mode experiments on hardware
+  - [x] Rebuild after the host-file permission fix and the updated measurement return-path logic
+  - [x] Reflash and validate the updated measurement return-path logic on hardware
+- [ ] Motor phase tuning Phase 1
+  - [x] Add a first host-side CSV analyzer script for constant-speed captures
+  - [x] Run the analyzer on real U1 CSV files copied off the printer
+  - [x] Use the measured sample-rate envelope to define the first bounded sweep range
+  - [x] Add automatic safe staging and axis-limit-aware direction handling
+  - [x] Add an in-printer bounded sweep command that can sequence multiple measurements
+  - [x] Add host-side forward/backward aggregation across repeated runs at the same speed
+  - [x] Add host-side basis export for a first small harmonic set from aggregated runs
+  - [x] Add host-side normalized fit/LUT export from the aggregated basis
+  - [x] Add host-side runtime-payload export for a future U1 integration target
+  - [x] Add a first printer-side direct-mode consumer for the runtime-payload prototype
+  - [x] Add an in-memory profile layer for loaded runtime payloads
+  - [x] Add a step-generation-adjacent diagnostic trace command that exports real `stepcompress` history for a normal move
+  - [x] Add a step-execution-near diagnostic trace path with MCU-side sampled execution clocks and step numbers
+  - [x] Rebuild fresh host and mainboard-MCU artifacts for the execution-trace slice
+  - [x] Add an execution-near correction-plan projection path plus offline analyzer support for `...-plan.csv`
+- [ ] Motor phase tuning Phase 2
+  - [x] Reject the host-`dwell()` direct-mode path as too coarse for benefit testing
+  - [x] Reject the scheduled-SPI direct-mode path as still audibly stuttering
+  - [x] Prove that host flush and queue/load seams are too coarse, while the execution-near seam is diagnostically useful
+  - [x] Stabilize the printer-side `H2/H4` execution-near gate as the current acceptance baseline
+  - [ ] Define the smallest dedicated phase-stepping executor for one motor on the mainboard MCU
+  - [ ] Keep the first executor limited to `stepper_y @ 30 mm/s` with the frozen `H2/H4` working set
+  - [ ] Add an explicit rollback/escape path from direct mode back to normal step/dir
+- [ ] Motor phase tuning Phase 3
+  - [x] Build a baseline-only dedicated executor (src/motor_phase_exec.c)
+    - [x] 1024-point cos/sin tables computed at init via Q15 recursive rotation
+    - [x] timer ISR advances phase_index, sets pending flag, wakes task
+    - [x] DECL_TASK writes 5-byte DIRECT_MODE SPI frame per tick
+    - [x] config/start/stop MCU commands
+    - [x] DECL_SHUTDOWN marks executors idle
+    - [x] Added to src/Makefile under CONFIG_HAVE_GPIO_SPI
+  - [x] Host-side MOTOR_PHASE_EXEC_RUN command in motor_phase_calibration.py
+    - [x] MotorPhaseExec Python class sets up MCU SPI + executor OID at config time
+    - [x] exec_stepper / exec_spi_bus / exec_cs_pin config params in printer.cfg
+    - [x] reuses _with_direct_mode + _stage_xy_position for safe entry/exit
+    - [x] re-homes XY automatically after run (position unknown after direct mode)
+  - [x] Build MCU binary (out_at32f403a/at32f403a.bin, 48 KB)
+  - [x] Stage the custom main-MCU bundle into the SoC image so `check-restore`
+    no longer reverts the flashed executor MCU back to stock on reboot
+  - [ ] Split startup MCU version checks so `mcu0` and `head0..head3` can use
+    different expected versions without disabling `check-restore`
+  - [ ] Validate clean direct-mode entry/exit and no desync after the baseline run
+  - [ ] Assess whether baseline motion is audibly smooth (no stutter)
+  - [ ] Only after baseline smoothness is proven, add correction-capable mode
 
 ---
 
 ## Handoff
 - Agent: Codex
-- Date: 2026-04-04
+- Date: 2026-04-05
 - Completed this session:
-  - Validated `PLANS.md` against the current repo and `SnapmakerU1-Extended-Firmware`
-  - Corrected the false wildcard-include assumption
-  - Confirmed the image-builder infrastructure listed in the plan exists in the Extended Firmware repo
-  - Confirmed current feature dependencies and support overlays for Remote Screen, Camera, and USB Ethernet
-  - Corrected the camera assumption from “unknown binary source” to “external pinned source build”
-  - Corrected the curl SHA256 and updated the architecture to match the user's stated target
-  - Imported the image-builder scripts, helper scripts, tool sources, Dockerfile, `vars.mk`, and `dev.sh`
-  - Imported `deps/screen-apps/`
-  - Integrated image-builder targets into the root `Makefile`
-  - Isolated pure image-builder targets from the MCU build graph in the root `Makefile`
-  - Added the baseline `overlays/` structure
-  - Imported the minimal support overlays for include config, nginx `fluidd.d`, DHCP persistence, MAC persistence, and USB NIC firmware files
-  - Imported the low-risk feature overlays for extended includes, IPv6 disable, and curl
-  - Imported the medium-risk feature overlays for OEM disk usage and USB Ethernet
-  - Verified overlay ordering from the root builder with `make overlays PROFILE=extended`
-  - Verified tool dispatch from the root builder with `make -n tools`
-  - Verified the imported builder in Docker with `./dev.sh make tools`, `./dev.sh make firmware`, and `./dev.sh make extract PROFILE=extended`
-  - Imported the missing Phase 5 overlays for Remote Screen and Camera
-  - Added a repo-owned host-sync overlay for `lava/*.cfg`
-  - Corrected the imported Remote Screen HTML install path to `/usr/local/share/fb-http/html`
-  - Completed a full end-to-end Docker build to `firmware/firmware.bin`
-  - Verified the rebuilt rootfs contains the selected feature files and config hooks
-  - Removed the stale USB-Ethernet `dhcpcd.conf` patch after confirming stock firmware `1.2.0.106` already enables `eth0`
-  - Documented the current build outputs and flash commands in `README.md`
-  - Documented the exact verified image build workflow and overlay order in this `PLANS.md`
-  - Documented the recommended first hardware flash procedure in this `PLANS.md`
-  - Imported the timelapse compatibility stub from Extended Firmware for future builds
-  - Rebuilt `firmware/firmware.bin` after changing the Remote Screen defaults and cleaning up the `timelapse` stub
-  - Renamed the runtime config path from `extended2.cfg` to `extended.cfg` across the imported feature set
-  - Added first-boot migration from `extended2.cfg` to `extended.cfg` for existing printers and rebuilt the firmware image
-  - Flashed the resulting firmware to a real U1 and validated the selected features on hardware
-  - Added `common/07-persist-ssh-hostkeys` and rebuilt the image so Dropbear host keys are persisted in `/oem/dropbear`
+  - reviewed the newly added baseline-only MCU executor and host wiring
+    (`src/motor_phase_exec.c`, `MOTOR_PHASE_EXEC_RUN`, overlay host sync path)
+  - corrected stale statements in `motor-phase-tuning.md`
+    - `tmc2240.py` already exposes `DIRECT_MODE`, `coil_a`, and `coil_b`
+    - build integration uses `src-$(CONFIG_HAVE_GPIO_SPI) += motor_phase_exec.c`
+  - harmonized the documented SoC/MCU build and flash flow
+    - SoC: `./dev.sh make build PROFILE=extended`
+    - MCU: `make CPP=arm-none-eabi-cpp clean && make CPP=arm-none-eabi-cpp`
+    - staged MCU artifact: `out_at32f403a/at32f403a.bin`
+  - verified current Python-side changes compile cleanly with `py_compile`
+  - documented the main runtime risk of the current executor design:
+    - the MCU side currently uses a single `pending` flag, so missed service
+      windows collapse multiple timer ticks into one SPI update
+  - built fresh host and MCU artifacts successfully
+    - `firmware/firmware.bin`
+    - `tmp/firmware/update.img`
+    - `out_at32f403a/at32f403a.bin`
+  - cleaned up MCU version metadata for the next flash:
+    - removed hostname suffix from `scripts/buildcommands.py`
+    - replaced the zero USB product suffix placeholder in the U1 MCU configs
+  - found and fixed the reboot revert path for the custom main MCU:
+    - `S60klipper` runs `systemUpgrade.sh check-restore` on every start
+    - the stock image still shipped `/home/lava/firmware_MCU/VERSION` as
+      `20260323110253-51d366c286`, so a manually flashed `localbuild` MCU was
+      treated as mismatched and restored back to stock
+    - the SoC build now stages the local `out_at32f403a/at32f403a.bin` into
+      both `/home/lava/firmware_MCU/at32f403a.bin` and the top-level upgrade
+      bundle, and rewrites `VERSION`, `md5sum.txt`, and `MCU_DESC` to
+      `19700101000000-localbuild`
+  - identified the follow-up reboot delay bug after that fix:
+    - `systemUpgrade.sh` still used one global expected version for both the
+      custom main MCU and the stock toolhead MCUs
+    - after the main MCU started reporting `localbuild`, startup kept trying to
+      reconcile the unchanged head MCUs on every boot, causing the long loop-like
+      startup delay
+    - the proper fix is to keep checks enabled but split the expected versions
+      into `VERSION_MAIN` and `VERSION_HEAD`
+  - implemented that split-version fix in the image build:
+    - `systemUpgrade.sh` now resolves expected MCU versions per board type
+    - the SoC image now stages `VERSION_MAIN=19700101000000-localbuild`
+    - the SoC image now stages `VERSION_HEAD=20260323110253-51d366c286`
+    - rebuilt `tmp/firmware/update.img` and `firmware/firmware.bin`
+    - verified the new files directly in `tmp/firmware/rootfs`
+  - verified on hardware that the split-version boot fix works:
+    - printer now boots normally again
+    - `show-status` reports `Main MCU = localbuild`
+    - `show-status` reports all head MCUs still on stock `51d366c286`
+    - no `skip_checking_mcu` workaround required
+  - ran the first baseline executor hardware test:
+    - `MOTOR_PHASE_EXEC_RUN` now starts instead of failing on protocol/version mismatch
+    - current failure mode is electrical/runtime, not boot/version
+    - observed failure:
+      - `Unable to obtain 'spi_transfer_response' response`
+      - `GSTAT reset=1 uv_cp=1 vm_uvlo=1`
+  - captured the pre-failure TMC state:
+    - idle `GSTAT=0`
+    - `GCONF=0x00000008`
+    - `CHOPCONF=... mres=2(64usteps) intpol=1`
+    - `DRV_STATUS ... cs_actual=0(Reset?) stst=1`
+    - `MSCNT=1022`
+  - reduced executor update density on the host side:
+    - `MOTOR_PHASE_EXEC_RUN` now accepts `PHASE_STRIDE`
+    - default stride is now `16`
+    - this keeps checks and current executor architecture intact, but reduces
+      SPI update pressure substantially versus one update per step
+  - rebuilt fresh SoC artifacts for the stride-based retest:
+    - `tmp/firmware/update.img`
+    - `firmware/firmware.bin`
 - Stopped at:
-  - New image build is complete; SSH host key persistence still needs one hardware reboot check on the printer
+  - boot/version path is fixed and verified on hardware
+  - executor baseline path still fails electrically at current runtime settings
+  - the stride-based host retest image is built, but not yet flashed/tested
 - Next step:
-  - Flash the rebuilt image, reboot once, and confirm the SSH host key no longer changes between boots
+  1. Flash the latest SoC image for the stride-based executor retest:
+     - `scp tmp/firmware/update.img root@<u1-ip>:/tmp/`
+     - `ssh root@<u1-ip> /home/lava/bin/systemUpgrade.sh upgrade soc /tmp/update.img`
+  2. Run the reduced-rate baseline executor retest:
+     - `MOTOR_PHASE_EXEC_RUN STEPPER=stepper_y SPEED=30 DISTANCE=20 COIL_SCALE=40 PHASE_STRIDE=16`
+  3. If it still fails, capture immediately:
+     - `DUMP_TMC STEPPER=stepper_y REGISTER=GSTAT`
+     - `DUMP_TMC STEPPER=stepper_y REGISTER=DRV_STATUS`
+     - `DUMP_TMC STEPPER=stepper_y REGISTER=MSCNT`
+  4. If the stride-based retest still trips `uv_cp` / `vm_uvlo`, redesign before
+     any correction mode:
+     - current timer->pending->DECL_TASK SPI path is still too aggressive or
+       otherwise not electrically/runtime-safe
 - Open blockers:
-  - none
+  - direct-mode enable/disable sequencing is only partially hardened; the first
+    entry fix now aligns to current `MSCNT`, but the baseline executor has not
+    yet proven it can enter and exit without `GSTAT reset/drv_err/vm_uvlo`
+  - current executor coalesces timer ticks behind a single `pending` flag; if
+    the SPI task cannot keep up, phase updates are dropped and motion may stutter
+  - even with the boot/version path fixed, the current baseline executor can
+    still trip TMC undervoltage/reset faults during runtime
 - Decisions made this session:
-  - this repo must own the resulting image build, not only patch a stock firmware image
-  - minimal support overlays are allowed when required by the selected 7 features
-  - USB NIC firmware blobs from `ccde0b8` are in scope
-
----
+  - baseline-only executor remains the right first runtime-near test scope
+  - current `H2/H4` gate remains a runtime-near acceptance metric, not a benefit claim
+  - MCU build docs must use the root `make CPP=arm-none-eabi-cpp ...` flow
+  - the current executor design's `pending`-bit coalescing behavior is an
+    explicit risk to validate, not an implementation detail to ignore
+  - MCU dirty-build strings should keep the timestamp but must not include the
+    workstation hostname
+  - the SoC image must ship the same main-MCU bundle metadata as the manually
+    flashed custom MCU, otherwise `systemUpgrade.sh check-restore` reverts the
+    executor MCU back to stock on the next Klipper start
+  - startup checks must remain active; the correct mixed-version dev setup is
+    separate expected versions for main and head MCUs, not `skip_checking_mcu`
+  - the current next experiment is to reduce executor SPI update density with
+    `PHASE_STRIDE=16` before attempting any deeper MCU-side redesign
 
 ## Notes
 - Remote Screen in the current Extended Firmware is include-driven and nginx-sidecar-based; it is not just a direct `printer.cfg` modification anymore
@@ -696,6 +847,7 @@ Only after the SoC-only path is confirmed should `firmware.bin` / `upgrade all` 
 - Camera support currently depends on an external pinned `v4l2-mpp` build
 - The imported plan should preserve minimality: only the selected 7 features plus their required support layers belong in scope
 - This repo is now the working base for future U1 development, including selective ports from mainline Klipper, as long as U1-specific integration remains reviewable and isolated
+- New feature tracks should distinguish verified repo facts from proposed design. `motor-phase-tuning.md` is currently a feasibility plan, not an implementation-ready task list.
 - Mainline Klipper reference for the lookahead flush change: `16fc46fe5ff0dbbc5188ee6a7829eee5976c1eb9` (`toolhead: Reduce LOOKAHEAD_FLUSH_TIME to 0.150 seconds`, 2025-09-30)
 - Official SSH remains enabled through the stock Snapmaker UI path; this repo only persists Dropbear host keys into `/oem/dropbear` so the client host key stays stable across reboots
   - Implementation detail: boot now rewires `/etc/dropbear` to `/oem/dropbear` before any SSH startup path runs, instead of patching Snapmaker's SSH activation flow

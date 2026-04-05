@@ -158,4 +158,7 @@ cp -f out_at32f415/klipper.bin out_at32f415/at32f415.bin
 
       For the other extruders, the "head0" parameter needs to be replaced to "head1", "head2" or "head3".
 
-- Fourth, restart the firmware or restart the device. A temporary file "/oem/.skip_checking_mcu" needs to be created to disable the firmware matching check.
+- Fourth, restart the firmware or restart the device. The preferred development
+  path is to keep the firmware matching checks enabled and make sure the SoC
+  image ships the matching MCU version metadata for the boards you intend to
+  run. Do not rely on `/oem/.skip_checking_mcu` as a normal workflow.

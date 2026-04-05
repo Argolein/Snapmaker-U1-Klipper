@@ -492,8 +492,7 @@ def build_version(extra, cleanbuild):
         cleanbuild = False
     if not cleanbuild:
         btime = time.strftime("%Y%m%d_%H%M%S")
-        hostname = socket.gethostname()
-        version = "%s-%s-%s" % (version, btime, hostname)
+        version = "%s-%s" % (version, btime)
     return version + extra
 
 # Run "tool --version" for each specified tool and extract versions
