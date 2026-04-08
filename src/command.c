@@ -400,3 +400,4 @@ command_find_and_dispatch(uint8_t *buf, uint_fast8_t buf_len
     }
     return ret;
 }
+

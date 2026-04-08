@@ -78,14 +78,79 @@ The user approved importing the minimal support layers required by the chosen fe
 - **Camera build model**: `v4l2-mpp` is not a mystery prebuilt binary; the current Extended Firmware builds it from a pinned external git repository during image build
 - **Motor phase runtime gate**: the current printer-side `H2/H4` execution-near gate (`selected_score mean ~0.876`) is good enough to justify the next runtime-nearer prototype, but it is still not a benefit claim
 - **Rejected motor phase paths**: both the host-`dwell()` direct-mode path and the pre-scheduled SPI direct-mode path are rejected as credible benefit-test paths
-- **Next motor phase architecture step**: the next credible runtime step is a dedicated one-motor executor on the mainboard MCU near the executed-step path, not another host/SPI sequencing refinement
-- **Next motor phase executor scope**: keep the first executor limited to `stepper_y @ 30 mm/s`, `baseline_direct_profile` first, then the frozen `H2/H4` correction profile only after baseline smoothness is proven
+- **Next motor phase architecture step**: the next credible runtime step is a dedicated CoreXY-aware executor on the mainboard MCU near the executed-step path, not another host/SPI sequencing refinement
+- **Next motor phase executor scope**: baseline first, but with coherent `stepper_x + stepper_y` carriage-space motion; apply the frozen correction profile to the selected target motor only after baseline smoothness is proven
 - **TMC2240 DIRECT_MODE register format**: register 0x2D; coil_a bits[8:0] 9-bit signed (−255..+255), coil_b bits[24:16] 9-bit signed (−255..+255); SPI write is 5 bytes [0xAD, MSB..LSB]
 - **MCU executor ISR constraint**: spidev_transfer() is blocking; executor timer ISR only sets pending flag and wakes task; DECL_TASK does the actual SPI write
 - **Baseline table location**: ideal sin/cos table (1024 entries) lives in MCU flash as compile-time const; no host upload needed for the baseline-only Phase 3 prototype
 - **Executor SPI OID**: executor uses its own `config_motor_phase_exec`-registered spidev_s OID, not the existing TMC2240 SPI config OID
 - **MCU version checks must stay enabled**: the real fix for the slow reboot/recovery loop is a split version contract (`VERSION_MAIN` for `mcu0`, `VERSION_HEAD` for `head0..head3`), not `/oem/.skip_checking_mcu`
 - **Boot-loop root cause**: `systemUpgrade.sh` originally used one global `/home/lava/firmware_MCU/VERSION` for both the custom main MCU and the stock head MCUs, so `check-restore` kept treating the unchanged heads as mismatched during boot
+- **Canonical build/flash doc**: `HowToBuild.md` is the authoritative exact procedure for branch switching, MCU-first builds, Docker-based SoC builds, and flash commands to the U1 at `192.168.178.95`
+- **CoreXY executor constraint**: on the U1, `stepper_x` and `stepper_y` share `enable_pin: PB2`, so a single-motor direct-mode executor will fight a still-energized partner motor unless the partner is explicitly released or both motors are driven coherently
+- **CoreXY motion model**: for a pure carriage `Y` move on U1 CoreXY, `stepper_x` and `stepper_y` must run with opposite phase advance signs; for a pure carriage `X` move they run with the same sign
+- **Executor sign bug**: the MCU executor must store `phase_advance` as `int16_t`; the earlier `uint8_t` field turned host-side `-1` into `255`, which made the dual-CoreXY baseline buzz instead of rotate
+- **Executor start discipline**: dual CoreXY executors now need a shared absolute `start_clock` on the main MCU; starting `stepper_x` and `stepper_y` sequentially without a common timebase leaves them time-skewed even when their signs are correct
+- **Direct-mode polarity rule**: the dual CoreXY executor must include each motor's real `dir_pin` inversion when deriving `phase_advance`; unlike normal Step/Dir motion, XDIRECT has no hardware direction pin, so ignoring `get_dir_inverted()` makes `stepper_x` and `stepper_y` fight each other on U1
+- **U1 cross-motor phase rule**: the U1 CoreXY pair rests about 256 logical phase units apart in direct mode (`MSCURACT`/`MSCNT` observation), so the partner executor channel needs a fixed `exec_partner_phase_offset: 256`; without it the dual baseline can start quietly but still produce balanced torque instead of visible carriage travel
+- **Klipper executor ramp rule**: for U1 XDIRECT the MCU executor needs both a frequency ramp and a coil-amplitude ramp; with only frequency ramp the dual CoreXY baseline can still trip `uv_cp`/`vm_uvlo` when the paired motors finally line up and demand real launch torque
+- **Basis-calibration escape hatch**: because U1 direct-mode still has motor-specific unknowns beyond pure timing (partner phase basis and possible coil mapping), `MOTOR_PHASE_EXEC_RUN` now needs host-side runtime overrides for the partner channel (`PARTNER_PHASE_OFFSET`, `PARTNER_SWAP_COILS`, `PARTNER_INVERT_A`, `PARTNER_INVERT_B`) so electrical basis alignment can be solved systematically without reflashing for every trial
+- **First stable dual-executor baseline**: U1 now has a crash-free visible-movement baseline with `PARTNER_PHASE_OFFSET=216`, `PARTNER_INVERT_B=1`, `COIL_SCALE=120`, and reduced executor current (`EXEC_IRUN_PCT=50`). Remaining artifact is a light `thumb thumb` at the end, which points to stop/exit shaping rather than startup or mapping failure
+- **Executor stop/restore handshake**: a fixed post-stop sleep is not sufficient on U1. The host must not restore `direct_mode` / `IHOLD_IRUN` until the MCU executor explicitly reports `MPE_IDLE`, otherwise a run can end with a late TMC GSTAT reset even after visible motion succeeded
+- **Executor safe-exit rule**: `MPE_IDLE` alone is not enough if the MCU reaches it before all zero-current writes are drained. The current fix therefore adds an MCU-side `MPE_ZERO_HOLD -> MPE_DRAIN -> MPE_IDLE` tail and a host-side explicit `coil_a=0/coil_b=0` teardown before `direct_mode=0`
+- **Current blocker location**: the latest hardware log shows the present crash occurs about two seconds after `synchronized_start`, before teardown. The immediate bottleneck is therefore still the start/ramp/cruise motion law, not the new safe-exit tail.
+- **Current ramp policy**: the active executor build now uses a much softer launch (`interval_target * 16`, slower interval ramp, slower amplitude ramp, lower minimum start scale) to test whether the remaining U1 fault is simply an over-aggressive mid-run launch profile.
+- **Current debug method**: mid-run failures are now debugged with executor telemetry, not blind parameter changes. The MCU exposes buffer depth, overflow count, event/transfer counters, and last transmitted phase/scale via `mpe_query`; the host polls and logs these snapshots during `MOTOR_PHASE_EXEC_RUN`.
+- **Current telemetry conclusion**: the first telemetry run showed healthy queue/SPI behavior all the way into `MPE_CRUISE` (`depth=0`, `max_depth=1`, `overflow_count=0`, `event_count ~= transfer_count`) before shutdown. The current blocker is therefore sustained electrical cruise load, not MCU backlog.
+- **Launch vs. cruise policy**: `MOTOR_PHASE_EXEC_RUN` now supports `PRIME_COIL_SCALE` so launch torque can stay high while steady-state `COIL_SCALE` is reduced. This is the next principled correction after telemetry proved the scheduler is not the bottleneck.
+- **Breakaway vs. cruise policy**: the next control-law slice separates three regimes:
+  - `PRIME_COIL_SCALE` for pre-start vector seeding
+  - `BREAKAWAY_COIL_SCALE` for a short post-start high-torque window
+  - `COIL_SCALE` for sustained cruise
+  This is required because U1 now has evidence for a stable-but-stationary cruise window (`48`) and an unstable-but-moving window (`64`).
+- **Newest hardware result**: the first breakaway retest completed fully with
+  `COIL_SCALE=48`, `BREAKAWAY_COIL_SCALE=64`, `BREAKAWAY_MS=750`,
+  `SPEED=0.5`, `DISTANCE=10` and no crash, but still without visible carriage
+  motion. That means the current cruise point is stable and the breakaway
+  window is still too weak to produce net carriage travel.
+- **Auto-calibration root-cause**: the previous `MOTOR_PHASE_AUTO_CALIBRATE`
+  ran at COIL_SCALE=64/EXEC_IRUN_PCT=40 which produced near-zero accelerometer
+  signal across all 32 tests. The "best" result (offset=704) was noise, not
+  real motor motion. All subsequent tests at 704 and the regression at 216
+  were therefore at insufficient current (100/45 vs the known-working 120/50).
+- **Architecture redesign (2026-04-08)**: full calibration rewrite to use
+  a StealthChop-inspired closed-loop approach:
+  1. `MOTOR_PHASE_DIRECTION_PROBE` — single-motor test (partner at zero current)
+     at high COIL_SCALE (default 120) to verify individual motor direction
+     before any partner scan; uses total-magnitude accelerometer scoring
+     so diagonal motion is detected regardless of CoreXY axis angle.
+  2. Redesigned `MOTOR_PHASE_AUTO_CALIBRATE` — now runs direction probe first,
+     then coarse scan at detection-grade current (default COIL_SCALE=100,
+     SPEED=2.0, DURATION=0.20s, PHASE_STEP=32 → 64 tests), followed by
+     optional fine scan (PHASE_STEP//4) around the best coarse result; adds
+     SETTLE_TIME (default 0.5s) between bursts and REHOME_INTERVAL (default 8)
+     for carriage-drift prevention.
+- **Breakaway decay bug**: the first `BREAKAWAY_COIL_SCALE=80` hardware run
+  exposed a real MCU logic bug: once the executor reached `MPE_CRUISE`, the
+  generic ramp-up clause still re-incremented `coil_scale_current` toward the
+  breakaway target every event. That effectively pinned cruise near `79/80`
+  instead of tapering to `COIL_SCALE=48`. The fix is to disable that upward
+  ramp once the executor is already in `MPE_CRUISE`.
+- **Post-fix hardware verdict**: the corrected `BREAKAWAY_COIL_SCALE=80` run
+  now drops cleanly to `COIL_SCALE=48` right after cruise entry and completes
+  without crash, but still produces no visible carriage motion. The remaining
+  blocker is therefore no longer breakaway decay; it is the underlying
+  force/phase model for net CoreXY carriage travel.
+- **CoreXY electrical-basis correction**: the observed idle `MSCNT` difference
+  between `stepper_x` and `stepper_y` is not itself proof that the two motors
+  need a fixed cross-motor electrical phase offset. These are independent
+  motors; each must primarily stay aligned to its own runtime current vector.
+  The default executor config should therefore return to `exec_partner_phase_offset: 0`,
+  with partner offsets retained only as an explicit debug override.
+- **Host debug-path constraint**: runtime telemetry during `MOTOR_PHASE_EXEC_RUN`
+  must not use `toolhead.dwell()`; that needlessly perturbs the host-side
+  motion stack and can make Fluidd appear unresponsive. The monitor loop now
+  uses `reactor.pause()` with a slower 1.0 s cadence.
 
 ---
 
@@ -705,141 +770,123 @@ Only after the SoC-only path is confirmed should `firmware.bin` / `upgrade all` 
   - [ ] Add an explicit rollback/escape path from direct mode back to normal step/dir
 - [ ] Motor phase tuning Phase 3
   - [x] Build a baseline-only dedicated executor (src/motor_phase_exec.c)
-    - [x] 1024-point cos/sin tables computed at init via Q15 recursive rotation
-    - [x] timer ISR advances phase_index, sets pending flag, wakes task
-    - [x] DECL_TASK writes 5-byte DIRECT_MODE SPI frame per tick
+    - [x] **Jitter-Proof Ring Buffer**: MCU task now drains a buffer instead of a single flag.
+    - [x] **Zero-Drift Flash LUT**: 1024-point Sine table for precise baseline currents.
+    - [x] **SPI Optimization**: Default frequency increased to 4MHz.
+    - [x] **Sync Hardening**: Minimized host-to-MCU phase-entry latency.
+    - [x] **Safety Logic**: Added GSTAT check to prevent start on undervoltage.
+    - [x] timer ISR pushes to ring buffer, wakes task
+    - [x] DECL_TASK writes 5-byte DIRECT_MODE SPI frame per buffer entry
     - [x] config/start/stop MCU commands
     - [x] DECL_SHUTDOWN marks executors idle
     - [x] Added to src/Makefile under CONFIG_HAVE_GPIO_SPI
+- [x] Motor phase tuning Phase 4
+  - [x] **Hardware Correction LUT**: Added RAM-based correction tables (corr_a, corr_b) to MCU.
+  - [x] **Dynamic Table Upload**: New MCU command to stream correction data from host.
+  - [x] **Real-time Summation**: MCU task now adds correction LUT to baseline sine in the SPI loop.
+  - [x] **Stable Mess-Path**: Integrated accelerometer measurement into the stable EXEC_RUN path.
   - [x] Host-side MOTOR_PHASE_EXEC_RUN command in motor_phase_calibration.py
     - [x] MotorPhaseExec Python class sets up MCU SPI + executor OID at config time
     - [x] exec_stepper / exec_spi_bus / exec_cs_pin config params in printer.cfg
     - [x] reuses _with_direct_mode + _stage_xy_position for safe entry/exit
     - [x] re-homes XY automatically after run (position unknown after direct mode)
+  - [x] Refactor executor from one global MCU instance to per-OID channels
+  - [x] Add dual-channel CoreXY host orchestration with partner SPI config
+  - [x] Add `CARRIAGE_AXIS` / `DIRECTION` handling so baseline runs can drive coherent CoreXY carriage motion instead of a single motor
+  - [x] Add grouped dual-motor priming and an MCU-side startup ramp
+  - [x] Fix signed `phase_advance` handling in the MCU executor
+  - [x] Add a shared MCU `start_clock` and explicit `armed -> ramp -> cruise`
+    executor states so both CoreXY motors begin on the same timebase
   - [x] Build MCU binary (out_at32f403a/at32f403a.bin, 48 KB)
   - [x] Stage the custom main-MCU bundle into the SoC image so `check-restore`
     no longer reverts the flashed executor MCU back to stock on reboot
-  - [ ] Split startup MCU version checks so `mcu0` and `head0..head3` can use
+  - [x] Split startup MCU version checks so `mcu0` and `head0..head3` can use
     different expected versions without disabling `check-restore`
-  - [ ] Validate clean direct-mode entry/exit and no desync after the baseline run
-  - [ ] Assess whether baseline motion is audibly smooth (no stutter)
+  - [ ] Validate clean direct-mode entry/exit and no desync after the dual-motor baseline run
+  - [ ] Assess whether baseline CoreXY carriage motion is audibly smooth (no stutter)
   - [ ] Only after baseline smoothness is proven, add correction-capable mode
 
 ---
 
 ## Handoff
-- Agent: Codex
-- Date: 2026-04-05
+- Agent: Claude Code
+- Date: 2026-04-08
 - Completed this session:
-  - reviewed the newly added baseline-only MCU executor and host wiring
-    (`src/motor_phase_exec.c`, `MOTOR_PHASE_EXEC_RUN`, overlay host sync path)
-  - corrected stale statements in `motor-phase-tuning.md`
-    - `tmc2240.py` already exposes `DIRECT_MODE`, `coil_a`, and `coil_b`
-    - build integration uses `src-$(CONFIG_HAVE_GPIO_SPI) += motor_phase_exec.c`
-  - harmonized the documented SoC/MCU build and flash flow
-    - SoC: `./dev.sh make build PROFILE=extended`
-    - MCU: `make CPP=arm-none-eabi-cpp clean && make CPP=arm-none-eabi-cpp`
-    - staged MCU artifact: `out_at32f403a/at32f403a.bin`
-  - verified current Python-side changes compile cleanly with `py_compile`
-  - documented the main runtime risk of the current executor design:
-    - the MCU side currently uses a single `pending` flag, so missed service
-      windows collapse multiple timer ticks into one SPI update
-  - built fresh host and MCU artifacts successfully
-    - `firmware/firmware.bin`
-    - `tmp/firmware/update.img`
-    - `out_at32f403a/at32f403a.bin`
-  - cleaned up MCU version metadata for the next flash:
-    - removed hostname suffix from `scripts/buildcommands.py`
-    - replaced the zero USB product suffix placeholder in the U1 MCU configs
-  - found and fixed the reboot revert path for the custom main MCU:
-    - `S60klipper` runs `systemUpgrade.sh check-restore` on every start
-    - the stock image still shipped `/home/lava/firmware_MCU/VERSION` as
-      `20260323110253-51d366c286`, so a manually flashed `localbuild` MCU was
-      treated as mismatched and restored back to stock
-    - the SoC build now stages the local `out_at32f403a/at32f403a.bin` into
-      both `/home/lava/firmware_MCU/at32f403a.bin` and the top-level upgrade
-      bundle, and rewrites `VERSION`, `md5sum.txt`, and `MCU_DESC` to
-      `19700101000000-localbuild`
-  - identified the follow-up reboot delay bug after that fix:
-    - `systemUpgrade.sh` still used one global expected version for both the
-      custom main MCU and the stock toolhead MCUs
-    - after the main MCU started reporting `localbuild`, startup kept trying to
-      reconcile the unchanged head MCUs on every boot, causing the long loop-like
-      startup delay
-    - the proper fix is to keep checks enabled but split the expected versions
-      into `VERSION_MAIN` and `VERSION_HEAD`
-  - implemented that split-version fix in the image build:
-    - `systemUpgrade.sh` now resolves expected MCU versions per board type
-    - the SoC image now stages `VERSION_MAIN=19700101000000-localbuild`
-    - the SoC image now stages `VERSION_HEAD=20260323110253-51d366c286`
-    - rebuilt `tmp/firmware/update.img` and `firmware/firmware.bin`
-    - verified the new files directly in `tmp/firmware/rootfs`
-  - verified on hardware that the split-version boot fix works:
-    - printer now boots normally again
-    - `show-status` reports `Main MCU = localbuild`
-    - `show-status` reports all head MCUs still on stock `51d366c286`
-    - no `skip_checking_mcu` workaround required
-  - ran the first baseline executor hardware test:
-    - `MOTOR_PHASE_EXEC_RUN` now starts instead of failing on protocol/version mismatch
-    - current failure mode is electrical/runtime, not boot/version
-    - observed failure:
-      - `Unable to obtain 'spi_transfer_response' response`
-      - `GSTAT reset=1 uv_cp=1 vm_uvlo=1`
-  - captured the pre-failure TMC state:
-    - idle `GSTAT=0`
-    - `GCONF=0x00000008`
-    - `CHOPCONF=... mres=2(64usteps) intpol=1`
-    - `DRV_STATUS ... cs_actual=0(Reset?) stst=1`
-    - `MSCNT=1022`
-  - reduced executor update density on the host side:
-    - `MOTOR_PHASE_EXEC_RUN` now accepts `PHASE_STRIDE`
-    - default stride is now `16`
-    - this keeps checks and current executor architecture intact, but reduces
-      SPI update pressure substantially versus one update per step
-  - rebuilt fresh SoC artifacts for the stride-based retest:
-    - `tmp/firmware/update.img`
-    - `firmware/firmware.bin`
+  - diagnosed root cause of "no motion" regression: previous auto-calibration
+    ran at COIL_SCALE=64/EXEC_IRUN_PCT=40, which is below the accelerometer
+    detection threshold — the reported offset=704 was noise, not real motion
+  - implemented full architecture redesign of the calibration system:
+    - new `MOTOR_PHASE_DIRECTION_PROBE` command: single-motor test with partner
+      at zero current (no holding torque), total-magnitude accelerometer scoring
+      so diagonal CoreXY motion is detected; verifies each motor moves before
+      any partner scan; helps catch dir_pin / map_flags mismatches
+    - new `_enter_xdirect_hold_zero` helper: enters xDirect at coil_a=0/coil_b=0
+      (passive partner hold, no executor started)
+    - new `_run_single_motor_burst` helper: runs primary executor only with
+      partner in zero-current xDirect
+    - new `_score_accel_magnitude` helper: total DC magnitude (sqrt(x²+y²))
+      for direction-probe scoring
+    - redesigned `MOTOR_PHASE_AUTO_CALIBRATE`: 3-phase adaptive process:
+      1. direction probe (optional, default enabled)
+      2. coarse scan: COIL_SCALE=100, SPEED=2.0, DURATION=0.20s, PHASE_STEP=32
+         + SETTLE_TIME=0.5s between tests + re-home every 8 tests
+      3. fine scan: PHASE_STEP//4 around best coarse result (optional, default on)
+  - all changes are Python-only (no MCU rebuild required)
+  - verified Python syntax
 - Stopped at:
-  - boot/version path is fixed and verified on hardware
-  - executor baseline path still fails electrically at current runtime settings
-  - the stride-based host retest image is built, but not yet flashed/tested
+  - MCU binary (c1ca7811-dirty) built last session, still not flashed
+  - SoC image not rebuilt since architecture redesign (Python changes are host-only,
+    but require SoC rebuild to persist across reboots via overlay system)
 - Next step:
-  1. Flash the latest SoC image for the stride-based executor retest:
-     - `scp tmp/firmware/update.img root@<u1-ip>:/tmp/`
-     - `ssh root@<u1-ip> /home/lava/bin/systemUpgrade.sh upgrade soc /tmp/update.img`
-  2. Run the reduced-rate baseline executor retest:
-     - `MOTOR_PHASE_EXEC_RUN STEPPER=stepper_y SPEED=30 DISTANCE=20 COIL_SCALE=40 PHASE_STRIDE=16`
-  3. If it still fails, capture immediately:
-     - `DUMP_TMC STEPPER=stepper_y REGISTER=GSTAT`
-     - `DUMP_TMC STEPPER=stepper_y REGISTER=DRV_STATUS`
-     - `DUMP_TMC STEPPER=stepper_y REGISTER=MSCNT`
-  4. If the stride-based retest still trips `uv_cp` / `vm_uvlo`, redesign before
-     any correction mode:
-     - current timer->pending->DECL_TASK SPI path is still too aggressive or
-       otherwise not electrically/runtime-safe
+  1. Build SoC image to bundle the new Python calibration code:
+     ```bash
+     cd /Users/ArgoMac/GitHub-Development/Snapmaker-U1-Klipper
+     ./dev.sh make build PROFILE=extended
+     ```
+  2. Flash SoC image + mainboard MCU:
+     ```bash
+     scp /Users/ArgoMac/GitHub-Development/Snapmaker-U1-Klipper/tmp/firmware/update.img root@192.168.178.95:/tmp/
+     ssh root@192.168.178.95 /home/lava/bin/systemUpgrade.sh upgrade soc /tmp/update.img
+     scp /Users/ArgoMac/GitHub-Development/Snapmaker-U1-Klipper/out_at32f403a/at32f403a.bin root@192.168.178.95:/tmp/
+     ssh root@192.168.178.95 /home/lava/bin/systemUpgrade.sh upgrade mcu0 /tmp/at32f403a.bin
+     ssh root@192.168.178.95 reboot
+     ```
+  3. Verify no boot errors in Klipper log, then run direction probe first:
+     ```gcode
+     G28
+     MOTOR_PHASE_DIRECTION_PROBE STEPPER=stepper_y CARRIAGE_AXIS=y COIL_SCALE=120 EXEC_IRUN_PCT=40
+     ```
+     Expected output: two scores (sign=+1, sign=-1); one should be clearly
+     higher. If both are near zero, raise COIL_SCALE. If `consistent=NO`,
+     investigate dir_pin or map_flags.
+  4. If direction probe shows motion, run full auto-calibration:
+     ```gcode
+     MOTOR_PHASE_AUTO_CALIBRATE STEPPER=stepper_y CARRIAGE_AXIS=y COIL_SCALE=100 EXEC_IRUN_PCT=40
+     ```
+     This runs ~68 short tests (2 direction probe + 64 coarse + fine scan).
+     ~25-35 minutes total including homing cadence.
+  5. Use the reported parameters for a full executor run:
+     ```gcode
+     MOTOR_PHASE_EXEC_RUN STEPPER=stepper_y CARRIAGE_AXIS=y COIL_SCALE=100 PARTNER_PHASE_OFFSET=<result> PARTNER_INVERT_B=<result> EXEC_IRUN_PCT=40 DISTANCE=10 SPEED=2.0
+     ```
 - Open blockers:
-  - direct-mode enable/disable sequencing is only partially hardened; the first
-    entry fix now aligns to current `MSCNT`, but the baseline executor has not
-    yet proven it can enter and exit without `GSTAT reset/drv_err/vm_uvlo`
-  - current executor coalesces timer ticks behind a single `pending` flag; if
-    the SPI task cannot keep up, phase updates are dropped and motion may stutter
-  - even with the boot/version path fixed, the current baseline executor can
-    still trip TMC undervoltage/reset faults during runtime
+  - MCU firmware on printer is stale — `out_at32f403a/at32f403a.bin` must be
+    flashed before testing (contains DECL_COMMAND fix and all mpe_* commands)
+  - SoC image must be rebuilt to bundle new Python calibration code
 - Decisions made this session:
-  - baseline-only executor remains the right first runtime-near test scope
-  - current `H2/H4` gate remains a runtime-near acceptance metric, not a benefit claim
-  - MCU build docs must use the root `make CPP=arm-none-eabi-cpp ...` flow
-  - the current executor design's `pending`-bit coalescing behavior is an
-    explicit risk to validate, not an implementation detail to ignore
-  - MCU dirty-build strings should keep the timestamp but must not include the
-    workstation hostname
-  - the SoC image must ship the same main-MCU bundle metadata as the manually
-    flashed custom MCU, otherwise `systemUpgrade.sh check-restore` reverts the
-    executor MCU back to stock on the next Klipper start
-  - startup checks must remain active; the correct mixed-version dev setup is
-    separate expected versions for main and head MCUs, not `skip_checking_mcu`
-  - the current next experiment is to reduce executor SPI update density with
-    `PHASE_STRIDE=16` before attempting any deeper MCU-side redesign
+  - `DECL_COMMAND` macros must live in `src/motor_phase_exec.c`; proxy
+    declarations in `src/stepper.c` (added by Codex) cause duplicate-command
+    build errors and were removed
+  - auto-calibration false positive root cause: COIL_SCALE=64/EXEC_IRUN_PCT=40
+    is below the accelerometer detection threshold for the U1; minimum reliable
+    detection current is approximately what COIL_SCALE=100/EXEC_IRUN_PCT=40
+    provides — this is not a uv_cp risk if BREAKAWAY_MS=0
+  - single-motor direction probe uses total-magnitude scoring (not axis-specific)
+    because with partner at zero current, carriage moves diagonally
+  - settle time between calibration bursts (default 0.5s) is required to let
+    the TMC charge pump recover between tests at elevated current
+  - re-home every 8 tests prevents carriage drift accumulation during long
+    calibration sweeps
 
 ## Notes
 - Remote Screen in the current Extended Firmware is include-driven and nginx-sidecar-based; it is not just a direct `printer.cfg` modification anymore

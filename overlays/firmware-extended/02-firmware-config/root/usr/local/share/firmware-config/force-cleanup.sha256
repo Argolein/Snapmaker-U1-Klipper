@@ -3,3 +3,7 @@ b0b11ca9959f7d3b1fcd750498986f47ca0cefca3d817b34ee63c3eb64efdd60  klipper/mainsa
 
 # Moved to tweaks - enable_object_processing can cause issues with large gcodes
 cd4a5aea7afcaa88031490805217a8088aaf383555d8afb0151f3fdc36f91487  moonraker/04_adaptive_mesh.cfg
+
+# Motor Phase Calibration Config Updates
+b80c1ec33f84e701ceeafde614c14bc0dc0fbee8b67c8361c6ed251b4bd1da35  klipper/motor_phase_calibration.cfg
+67c616cc71d058231099d9097d7483c7289691f073fac73e7bf456461850d5cb  klipper/motor_phase_calibration.cfg

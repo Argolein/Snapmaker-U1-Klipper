@@ -310,10 +310,11 @@ command_config_stepper(uint32_t *args)
         s->time.func = stepper_event_full;
     }
 }
-DECL_COMMAND(command_config_stepper, "config_stepper oid=%c step_pin=%c"
-             " dir_pin=%c invert_step=%c step_pulse_ticks=%u"
-             " type=%u index=%u");
+DECL_COMMAND(command_config_stepper,
+             "config_stepper oid=%c step_pin=%c dir_pin=%c invert_step=%c"
+             " step_pulse_ticks=%u type=%u index=%u");
 
+// Motor Phase Executor Infiltration
 // Return the 'struct stepper' for a given stepper oid
 static struct stepper *
 stepper_oid_lookup(uint8_t oid)
