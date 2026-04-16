@@ -127,6 +127,7 @@ class PrintStats:
                 self.print_start_time = curtime - int(print_file_env.get("total_duration"))
             else:
                 self.print_start_time = curtime
+            self.printer.send_event("print_stats:new_task_start")
         elif self.last_pause_time is not None:
             # Update pause time duration
             pause_duration = curtime - self.last_pause_time

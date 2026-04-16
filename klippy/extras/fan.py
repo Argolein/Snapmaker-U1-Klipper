@@ -6,7 +6,7 @@
 import logging, copy
 from . import pulse_counter
 
-FAN_MIN_TIME = 0.200
+FAN_MIN_TIME = 0.100
 
 class Fan:
     def __init__(self, config, default_shutdown_speed=0.):
@@ -74,9 +74,9 @@ class Fan:
         if (value and value < self.max_power and self.kick_start_time
             and (not self.last_fan_value or value - self.last_fan_value > .5)):
             # Run fan at full speed for specified kick_start_time
-            self.mcu_fan.set_pwm(print_time, self.max_power)
+            self.mcu_fan.set_pwm(print_time, self.max_power, FAN_MIN_TIME)
             print_time += self.kick_start_time
-        self.mcu_fan.set_pwm(print_time, value)
+        self.mcu_fan.set_pwm(print_time, value, FAN_MIN_TIME)
         self.last_fan_time = print_time
         self.last_fan_value = value
     def set_speed_from_command(self, value, control_enable=True):
@@ -161,18 +161,11 @@ class PrinterFan:
         fan_speed_dict['main_fan'] = self.fan.last_fan_value
         fan_speed_dict['extendable_fan'] = {}
         for fan_id in self.extendable_fan:
-            if fan_id == self.exhaust_fan_id:
-                fan_obj = self.printer.lookup_object(self.extendable_fan[fan_id], None)
-                if fan_obj is not None:
-                    fan_speed_dict['extendable_fan'][fan_id] = fan_obj.get_fan_speed()
-                else:
-                    logging.error("No fan found with ID {}".format(fan_id))
+            fan_obj = self.printer.lookup_object("fan_generic {}".format(self.extendable_fan[fan_id]), None)
+            if fan_obj is not None:
+                fan_speed_dict['extendable_fan'][fan_id] = fan_obj.fan.last_fan_value
             else:
-                fan_obj = self.printer.lookup_object("fan_generic {}".format(self.extendable_fan[fan_id]), None)
-                if fan_obj is not None:
-                    fan_speed_dict['extendable_fan'][fan_id] = fan_obj.fan.last_fan_value
-                else:
-                    logging.error("No fan found with ID {}".format(fan_id))
+                logging.error("No fan found with ID {}".format(fan_id))
         return copy.deepcopy(fan_speed_dict)
 
     def resume_all_fan_speed(self, fan_speed_dict):
@@ -180,18 +173,11 @@ class PrinterFan:
             self.fan.set_speed_from_command(fan_speed_dict['main_fan'])
         if 'extendable_fan' in fan_speed_dict:
             for fan_id, fan_speed in fan_speed_dict['extendable_fan'].items():
-                if fan_id == self.exhaust_fan_id:
-                    fan_obj = self.printer.lookup_object(self.extendable_fan[fan_id], None)
-                    if fan_obj is not None:
-                        fan_obj.fan_turn_on(fan_speed * 100)
-                    else:
-                        logging.error("No fan found with ID {}".format(fan_id))
+                fan_obj = self.printer.lookup_object("fan_generic {}".format(self.extendable_fan[fan_id]), None)
+                if fan_obj is not None:
+                    fan_obj.fan.set_speed_from_command(fan_speed)
                 else:
-                    fan_obj = self.printer.lookup_object("fan_generic {}".format(self.extendable_fan[fan_id]), None)
-                    if fan_obj is not None:
-                        fan_obj.fan.set_speed_from_command(fan_speed)
-                    else:
-                        logging.error("No fan found with ID {}".format(fan_id))
+                    logging.error("No fan found with ID {}".format(fan_id))
 
     def get_status(self, eventtime):
         return self.fan.get_status(eventtime)
@@ -201,20 +187,11 @@ class PrinterFan:
         fan_id = gcmd.get_int('P', None)
         if fan_id is not None:
             if fan_id in self.extendable_fan:
-                # purifier fan
-                if fan_id == self.exhaust_fan_id:
-                    fan_obj = self.printer.lookup_object(self.extendable_fan[fan_id], None)
-                    if fan_obj is not None:
-                        fan_obj.fan_turn_on(value * 100)
-                    else:
-                        gcmd.respond_info("M106: No fan found with ID {}".format(fan_id))
-                # other generic fan
+                fan_obj = self.printer.lookup_object("fan_generic {}".format(self.extendable_fan[fan_id]), None)
+                if fan_obj is not None:
+                    fan_obj.fan.set_speed_from_command(value)
                 else:
-                    fan_obj = self.printer.lookup_object("fan_generic {}".format(self.extendable_fan[fan_id]), None)
-                    if fan_obj is not None:
-                        fan_obj.fan.set_speed_from_command(value)
-                    else:
-                        gcmd.respond_info("M106: No fan found with ID {}".format(fan_id))
+                    gcmd.respond_info("M106: No fan found with ID {}".format(fan_id))
             else:
                 gcmd.respond_info("M106: Unsupported fan ID: {}".format(fan_id))
         else:
@@ -224,20 +201,11 @@ class PrinterFan:
         fan_id = gcmd.get_int('P', None)
         if fan_id is not None:
             if fan_id in self.extendable_fan:
-                # purifier fan
-                if fan_id == self.exhaust_fan_id:
-                    fan_obj = self.printer.lookup_object(self.extendable_fan[fan_id], None)
-                    if fan_obj is not None:
-                        fan_obj.fan_turn_off(0)
-                    else:
-                        gcmd.respond_info("M107: No fan found with ID {}".format(fan_id))
-                # other generic fan
+                fan_obj = self.printer.lookup_object("fan_generic {}".format(self.extendable_fan[fan_id]), None)
+                if fan_obj is not None:
+                    fan_obj.fan.set_speed_from_command(0.)
                 else:
-                    fan_obj = self.printer.lookup_object("fan_generic {}".format(self.extendable_fan[fan_id]), None)
-                    if fan_obj is not None:
-                        fan_obj.fan.set_speed_from_command(0.)
-                    else:
-                        gcmd.respond_info("M107: No fan found with ID {}".format(fan_id))
+                    gcmd.respond_info("M107: No fan found with ID {}".format(fan_id))
             else:
                 gcmd.respond_info("M107: Unsupported fan ID: {}".format(fan_id))
         else:

@@ -786,6 +786,8 @@ class ToolHead:
         self._calc_junction_deviation()
     def set_grab_complete(self, enable):
         self.is_grab_complete = not not enable
+    def get_grab_complete(self):
+        return self.is_grab_complete
 
 def add_printer_objects(config):
     config.get_printer().add_object('toolhead', ToolHead(config))

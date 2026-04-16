@@ -265,10 +265,11 @@ class HomingXYZOverride:
                 params['SAMPLE_TRIG_FREQ'] = self.relative_trigger_freq
             if 'SAMPLE_RETRACT_DIST' not in params and self.sample_retract_dist is not None:
                 params['SAMPLE_RETRACT_DIST'] = self.sample_retract_dist
-            if 'Z_OFFSET' not in params and self.z_offset is not None:
-                z_probe_offset = self.z_offset
-            else:
+
+            z_probe_offset = gcmd.get_float("Z_OFFSET", self.z_offset)
+            if z_probe_offset is None:
                 z_probe_offset = probe.get_offsets()[2]
+            gcmd.respond_info("z offset: {}".format(z_probe_offset))
             self.printer.send_event("inductance_coil:probe_start")
             if self.z_first_probe_sample_count > 0:
                 fast_probe_params = copy.deepcopy(gcmd.get_command_parameters())

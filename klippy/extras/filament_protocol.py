@@ -12,13 +12,14 @@ FILAMENT_INFO_STRUCT = {
     'SUB_TYPE': 'NONE',
     'TRAY': 0,
     'ALPHA': 0xFF,
+    'MULTI_MODE': 0,
     'COLOR_NUMS': 1,
     'ARGB_COLOR': 0xFFFFFFFF, # Old version
     'RGB_1': 0xFFFFFF,
-    'RGB_2': 0,
-    'RGB_3': 0,
-    'RGB_4': 0,
-    'RGB_5': 0,
+    'RGB_2': 0xFFFFFF,
+    'RGB_3': 0xFFFFFF,
+    'RGB_4': 0xFFFFFF,
+    'RGB_5': 0xFFFFFF,
     'DIAMETER': 0,
     'WEIGHT': 0,
     'LENGTH': 0,
@@ -44,6 +45,7 @@ FILAMENT_PROTO_MAIN_TYPE_PETG                   = 2
 FILAMENT_PROTO_MAIN_TYPE_ABS                    = 3
 FILAMENT_PROTO_MAIN_TYPE_TPU                    = 4
 FILAMENT_PROTO_MAIN_TYPE_PVA                    = 5
+FILAMENT_PROTO_MAIN_TYPE_PLA_CF                 = 20
 
 FILAMENT_PROTO_MAIN_TYPE_MAPPING = {
     "PLA":          FILAMENT_PROTO_MAIN_TYPE_PLA,
@@ -51,6 +53,7 @@ FILAMENT_PROTO_MAIN_TYPE_MAPPING = {
     "ABS":          FILAMENT_PROTO_MAIN_TYPE_ABS,
     "TPU":          FILAMENT_PROTO_MAIN_TYPE_TPU,
     "PVA":          FILAMENT_PROTO_MAIN_TYPE_PVA,
+    "PLA-CF":       FILAMENT_PROTO_MAIN_TYPE_PLA_CF,
     "Reserved":     FILAMENT_PROTO_MAIN_TYPE_RESERVED
 }
 
@@ -64,6 +67,10 @@ FILAMENT_PROTO_SUB_TYPE_SUPPORT                 = 5
 FILAMENT_PROTO_SUB_TYPE_HF                      = 6
 FILAMENT_PROTO_SUB_TYPE_95A                     = 7
 FILAMENT_PROTO_SUB_TYPE_95A_HF                  = 8
+FILAMENT_PROTO_SUB_TYPE_90A                     = 9
+FILAMENT_PROTO_SUB_TYPE_85A                     = 10
+FILAMENT_PROTO_SUB_TYPE_WOOD                    = 11
+FILAMENT_PROTO_SUB_TYPE_TRANSLUCENT             = 12
 
 FILAMENT_PROTO_SUB_TYPE_MAPPING = {
     'Basic':        FILAMENT_PROTO_SUB_TYPE_BASIC,
@@ -74,6 +81,10 @@ FILAMENT_PROTO_SUB_TYPE_MAPPING = {
     'HF':           FILAMENT_PROTO_SUB_TYPE_HF,
     '95A':          FILAMENT_PROTO_SUB_TYPE_95A,
     '95A HF':       FILAMENT_PROTO_SUB_TYPE_95A_HF,
+    '90A':          FILAMENT_PROTO_SUB_TYPE_90A,
+    '85A':          FILAMENT_PROTO_SUB_TYPE_85A,
+    'Wood':         FILAMENT_PROTO_SUB_TYPE_WOOD,
+    'Translucent':  FILAMENT_PROTO_SUB_TYPE_TRANSLUCENT,
     'Reserved':     FILAMENT_PROTO_SUB_TYPE_RESERVED
 }
 
@@ -106,6 +117,8 @@ M1_PROTO_COLOR_NUMS_POS                         = (1 * 64 + 0 * 16 + 8)
 M1_PROTO_COLOR_NUMS_LEN                         = (1)
 M1_PROTO_ALPHA_POS                              = (1 * 64 + 0 * 16 + 9)
 M1_PROTO_ALPHA_LEN                              = (1)
+M1_PROTO_MULTI_MODE_POS                         = (1 * 64 + 0 * 16 + 10)
+M1_PROTO_MULTI_MODE_LEN                         = (1)
 M1_PROTO_RGB_1_POS                              = (1 * 64 + 1 * 16 + 0)
 M1_PROTO_RGB_1_LEN                              = (3)
 M1_PROTO_RGB_2_POS                              = (1 * 64 + 1 * 16 + 3)
@@ -359,6 +372,8 @@ def m1_proto_data_parse(data_buf):
     info['TRAY'] = tmp
 
     info['ALPHA'] = 0xFF - data_buf[M1_PROTO_ALPHA_POS]
+
+    info['MULTI_MODE'] = data_buf[M1_PROTO_MULTI_MODE_POS]
 
     tmp = data_buf[M1_PROTO_COLOR_NUMS_POS]
     if tmp > FILAMENT_PROTO_COLOR_NUMS_MAX :

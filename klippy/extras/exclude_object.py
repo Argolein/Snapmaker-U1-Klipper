@@ -147,6 +147,7 @@ class ExcludeObject:
         offset = self._get_extrusion_offsets()
         last_pos_e = self._get_last_position_e()
         self._get_last_position_e_extruded()
+        self._get_last_position_e_excluded()
         self._get_max_position_extruded()
         extruder_name = self.toolhead.get_extruder().get_name()
 

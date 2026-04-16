@@ -47,6 +47,7 @@ class PauseResume:
     def _handle_pause_request(self, web_request):
         if self.v_sd is not None and self.v_sd.work_timer is not None:
             self.v_sd.pl_allow_save_env = False
+        self.printer.send_event("pause_resume:pause")
         self.gcode.run_script("PAUSE")
     def _handle_resume_request(self, web_request):
         self.gcode.run_script("RESUME")

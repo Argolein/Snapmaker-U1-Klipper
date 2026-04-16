@@ -16,12 +16,21 @@ class ExtruderUnknownParkStatus(Exception):
 class ExtruderPickAbnormal(Exception):
     pass
 
-PARK_DETECTOR_LOOP_CHECK_INTERVAL = 0.1
-PARK_DETECTOR_MAX_EXCEPTION_COUNT = 10
+PERIODIC_STATUS_CHECK_INTERVAL = 0.5
+DETECTION_ERROR_THRESHOLDS = {
+    'park_detector_threshold': 10,
+    'fan_monitor_threshold': 10
+}
 MAX_ALLOWED_DIFFERENCE = 3.0
 STRUCTURED_CODE_LIST = []
 
 EXTRUDER_SWITCH_RECORDER = "extruder_switch_recorder.json"
+
+NOZZLE_CONFIG_POSTFIX = "_nozzle_config.json"
+VALID_NOZZLE_DIAMETERS = [0.2, 0.4, 0.6, 0.8]
+NOZZLE_CONFIG_DEFAULT = {
+    "diameter": 0.4,
+}
 
 class ExtruderSwitchRecorder:
     def __init__(self, config):
@@ -32,7 +41,7 @@ class ExtruderSwitchRecorder:
         self.file_path = os.path.join(config_dir, EXTRUDER_SWITCH_RECORDER)
         # Old config path for migration
         self.old_file_path = os.path.join(self.printer.get_snapmaker_config_dir(), EXTRUDER_SWITCH_RECORDER)
-        self.save_interval = config.getfloat('save_interval', 30.0)
+        self.save_interval = config.getfloat('save_interval', 60.0)
         self.individual_maintenance_threshold = config.getint('individual_maintenance_threshold', 25100)
         self.total_maintenance_threshold = config.getint('total_maintenance_threshold', 100000)
         self.maintenance_exception_raised = False
@@ -129,12 +138,13 @@ class ExtruderSwitchRecorder:
                 'switch_count': 0,
                 'retry_count': 0,
                 'error_count': 0,
+                'fan_error_count': 0,
                 'last_maintenance_count': 0  # Switch count at last maintenance
             }
         else:
             # If extruder exists, only add missing fields
             entry = self.data[extruder_name]
-            for key in ['switch_count', 'retry_count', 'error_count', 'last_maintenance_count']:
+            for key in ['switch_count', 'retry_count', 'error_count', 'fan_error_count', 'last_maintenance_count']:
                 if key not in entry:
                     entry[key] = 0
 
@@ -176,6 +186,11 @@ class ExtruderSwitchRecorder:
         self.data[extruder_name]['error_count'] += 1
         self.dirty = True
         # logging.info(f"[ExtruderSwitchRecorder] Extruder {extruder_name} error count updated to: {self.data[extruder_name]['error_count']}")
+
+    def add_fan_error_count(self, extruder_name):
+        self._init_extruder_entry(extruder_name)
+        self.data[extruder_name]['fan_error_count'] += 1
+        self.dirty = True
 
     def cmd_RESET_EXTRUDER_SWITCH_RECORDER(self, gcmd):
         """G-code command to reset extruder switch recorder"""
@@ -236,6 +251,8 @@ class ExtruderSwitchRecorder:
             switch_count_since_maintenance = self.data[ext_name]['switch_count'] - self.data[ext_name]['last_maintenance_count']
             remaining = max(0, self.individual_maintenance_threshold - switch_count_since_maintenance)
             gcmd.respond_info(f"  {ext_name}: {switch_count_since_maintenance}/{self.individual_maintenance_threshold} (due in {remaining})")
+            fan_error_count = self.data[ext_name].get('fan_error_count', 0)
+            gcmd.respond_info(f"  Fan errors: {fan_error_count}")
         gcmd.respond_info("==================================")
 
 class ExtruderStepper:
@@ -400,6 +417,15 @@ class PrinterExtruder:
         self.activating_move = False
         self.extruder_num = extruder_num
         self.unipolar_hall = False
+
+        # init nozzle config info
+        self.nozzle_diameter = config.getfloat('nozzle_diameter', above=0.)
+        nozzle_config_name = self.name + NOZZLE_CONFIG_POSTFIX
+        nozzle_config_dir = self.printer.get_snapmaker_config_dir("persistent")
+        self.nozzle_config_path = os.path.join(nozzle_config_dir, nozzle_config_name)
+        self.nozzle_config_info = self.printer.load_snapmaker_config_file(self.nozzle_config_path, NOZZLE_CONFIG_DEFAULT)
+        self.nozzle_diameter = self.nozzle_config_info['diameter']
+
         # Setup hotend heater
         pheaters = self.printer.load_object(config, 'heaters')
         gcode_id = 'T%d' % (extruder_num,)
@@ -407,7 +433,6 @@ class PrinterExtruder:
         self.extruder_index = extruder_num
         self.heater = pheaters.setup_heater(config, gcode_id)
         # Setup kinematic checks
-        self.nozzle_diameter = config.getfloat('nozzle_diameter', above=0.)
         filament_diameter = config.getfloat(
             'filament_diameter', minval=self.nozzle_diameter)
         self.filament_area = math.pi * (filament_diameter * .5)**2
@@ -462,10 +487,19 @@ class PrinterExtruder:
         else:
             self.park_detector = None
         self.grab_hall_sensor_type = config.getint('grab_hall_sensor_type', 1, minval=0)
-        self.park_check_enable = False
+        # TODO: add extruder park check
+        self.park_check_enable = config.getboolean('park_check_enable', False)
+        self.park_detector_threshold = config.getint('park_detector_threshold',
+                                                     DETECTION_ERROR_THRESHOLDS['park_detector_threshold'], minval=1)
+        self.fan_speed_check_enable = config.getboolean('fan_speed_check_enable', True)
+        self.fan_monitor_threshold = config.getint('fan_monitor_threshold',
+                                                     DETECTION_ERROR_THRESHOLDS['fan_monitor_threshold'], minval=1)
+        self.check_interval = config.getfloat('check_interval', PERIODIC_STATUS_CHECK_INTERVAL, above=0.)
         self.park_exception_cnt = 0
-        self.check_interval = config.getfloat('check_interval', PARK_DETECTOR_LOOP_CHECK_INTERVAL, above=0.)
-        self.park_detector_loop_check = self.reactor.register_timer(self._park_detector_loop_check)
+        self.fan_speed_exception_cnt = 0
+        self.print_task_fan_error_sum = 0
+        self.print_stats = None
+        self.periodic_check_timer = self.reactor.register_timer(self._periodic_status_check)
         # Getting the necessary information for extruder switchover
         self.xy_park_position = None
         self.y_idle_position = None
@@ -535,6 +569,7 @@ class PrinterExtruder:
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
         self.printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
         self.printer.register_event_handler("probe_inductance_coil: update_extruder_offset", self._update_extruder_offset)
+        self.printer.register_event_handler("print_stats:new_task_start", self._handle_new_task_start)
 
         gcode = self.printer.lookup_object('gcode')
         wh = self.printer.lookup_object('webhooks')
@@ -548,8 +583,10 @@ class PrinterExtruder:
             gcode.register_command("ENTER_PARK_POINT_MANUAL_CALIBRATION", self.cmd_ENTER_PARK_POINT_MANUAL_CALIBRATION)
             gcode.register_command("EXIT_PARK_POINT_MANUAL_CALIBRATION", self.cmd_EXIT_PARK_POINT_MANUAL_CALIBRATION)
             wh.register_endpoint("control/extruder_temp", self._handle_control_extruder_temp)
+            wh.register_endpoint("control/nozzle_diameter", self._handle_control_nozzle_diameter)
             if self.park_detector is not None:
                 gcode.register_command("GET_EXTRUDER_ACTIVATE_INFO", self.cmd_GET_EXTRUDER_ACTIVATE_INFO)
+            self.printer.register_event_handler('print_stats:stop', self._handle_stop_print_job)
         gcode.register_mux_command("ACTIVATE_EXTRUDER", "EXTRUDER",
                                    self.name, self.cmd_ACTIVATE_EXTRUDER,
                                    desc=self.cmd_ACTIVATE_EXTRUDER_help)
@@ -565,16 +602,17 @@ class PrinterExtruder:
                                    self.name, self.cmd_MOVE_TO_PARK_CALIBRATION_POINT)
         gcode.register_mux_command("VERIFY_PARK_POSITION", "EXTRUDER",
                                    self.name, self.cmd_VERIFY_PARK_POSITION)
+        gcode.register_mux_command("SET_NOZZLE_DIAMETER", "EXTRUDER",
+                            self.name, self.cmd_SET_NOZZLE_DIAMETER)
+        self.gcode = gcode
     def _handle_connect(self):
         self.update_extruder_gcode_offset()
     def _handle_ready(self):
-        if self.park_detector is not None:
-            self.reactor.update_timer(self.park_detector_loop_check, self.reactor.monotonic() + 2)
+        self.print_stats = self.printer.lookup_object('print_stats', None)
+        if self.park_check_enable or self.fan_speed_check_enable:
+            self.reactor.update_timer(self.periodic_check_timer, self.reactor.NOW)
     def _handle_shutdown(self):
-        if self.park_detector is not None:
-            self.reactor.update_timer(self.park_detector_loop_check, self.reactor.NEVER)
-            self.check_enable = False
-            self.park_exception_cnt = 0
+        self.reactor.update_timer(self.periodic_check_timer, self.reactor.NEVER)
     def _handle_flow_calibration_end(self):
         logging.info("extruder: end flow calibration")
         self.is_calibrating_flow = False
@@ -584,6 +622,32 @@ class PrinterExtruder:
     def _update_extruder_offset(self):
         self.update_extruder_gcode_offset()
         self.active_gcode_offset()
+    def _handle_new_task_start(self):
+        self.fan_speed_exception_cnt = 0
+        self.print_task_fan_error_sum = 0
+    def _handle_stop_print_job(self):
+        extruder_list = self.printer.lookup_object('extruder_list', [])
+        fan_error_info = {}
+        fan_error_counts = []
+        all_fan_error_sum = 0
+        for extruder in extruder_list:
+            fan_error_sum = getattr(extruder, 'print_task_fan_error_sum', 0)
+            fan_error_counts.append(fan_error_sum)
+            if fan_error_sum != 0:
+                fan_error_info[extruder.name] = fan_error_sum
+                all_fan_error_sum += fan_error_sum
+        if fan_error_info and all_fan_error_sum >= 2:
+            logging.info(f"Fan error summary: {fan_error_info}")
+            exception_manager = self.printer.lookup_object('exception_manager', None)
+            if exception_manager is not None:
+                msg = f"Detected pogopin disconnection during print\nPlease clean and retry    {fan_error_counts}"
+                exception_manager.raise_exception_async(
+                id = 523,
+                index = 0,
+                code = 48,
+                message = msg,
+                oneshot = 1,
+                level = 1)
     def active_binding_probe(self):
         if self.binding_probe is None:
             return
@@ -643,6 +707,7 @@ class PrinterExtruder:
         sts = self.heater.get_status(eventtime)
         sts['can_extrude'] = bool(self.heater.can_extrude)
         sts['extruder_index'] = self.extruder_index
+        sts['nozzle_diameter'] = self.nozzle_diameter
         sts['printing_e_pos'] = self.printing_e_pos
         sts['activating_move'] = self.activating_move
         if self.park_detector is not None:
@@ -948,37 +1013,33 @@ class PrinterExtruder:
         except Exception as e:
             logging.exception("Error analyzing extruder state: %s", str(e))
             return None
-
-    def _park_detector_loop_check(self, eventtime):
-        if self.park_detector is None:
+    def _periodic_status_check(self, eventtime):
+        check_interval = None
+        if self.print_stats is not None:
+            toolhead = self.printer.lookup_object('toolhead')
+            is_grab_complete = toolhead.get_grab_complete()
+            if self.fan_speed_check_enable and self.binding_fan is not None:
+                check_interval = self.check_interval
+                if self.print_stats.state == "printing" and is_grab_complete and toolhead.get_extruder() is self:
+                    fan_info = self.binding_fan.get_status(eventtime)
+                    fan_speed = fan_info.get('speed', 0.0)
+                    fan_rpm = fan_info.get('rpm')
+                    if fan_speed > 0 and fan_rpm is not None and fan_rpm == 0:
+                        if self.fan_speed_exception_cnt < self.fan_monitor_threshold:
+                            self.fan_speed_exception_cnt += 1
+                            if self.fan_speed_exception_cnt >= self.fan_monitor_threshold:
+                                self.print_task_fan_error_sum += 1
+                                switch_recorder = self.printer.lookup_object('extruder_switch_recorder', None)
+                                if switch_recorder is not None:
+                                    switch_recorder.add_fan_error_count(self.name)
+                    else:
+                        if self.fan_speed_exception_cnt < self.fan_monitor_threshold:
+                            self.fan_speed_exception_cnt = 0
+                else:
+                    self.fan_speed_exception_cnt = 0
+        if check_interval is None:
             return self.reactor.NEVER
-        toolhead = self.printer.lookup_object('toolhead')
-        state_message, category = self.printer.get_state_message()
-        exception_record = False
-        if category == 'ready' and self.park_check_enable:
-            state = self.get_park_detector_status()
-            if toolhead.get_extruder() is self:
-                if state['state'] != 'ACTIVATE':
-                    exception_record = True
-            else:
-                if state['state'] != 'PARKED':
-                    exception_record = True
-        if exception_record:
-            if self.park_exception_cnt <= PARK_DETECTOR_MAX_EXCEPTION_COUNT:
-                self.park_exception_cnt += 1
-        else:
-            self.park_exception_cnt = 0
-
-        if self.park_exception_cnt == PARK_DETECTOR_MAX_EXCEPTION_COUNT:
-            self.park_exception_cnt = 0
-            self.printer.invoke_shutdown("current extruder name: {}, {} park detector error, {}".format(toolhead.get_extruder().name, self.name, state))
-            # extruder_list = self.printer.lookup_object('extruder_list', [])
-            # for i in range(len(extruder_list)):
-            #     extruder_list[i].set_park_detector_enable(False)
-            # virtual_sdcard = self.printer.lookup_object('virtual_sdcard', None)
-            # if virtual_sdcard is not None and virtual_sdcard.current_file is not None:
-            #     self.gcode.run_script('CANCEL_PRINT')
-        return eventtime + self.check_interval
+        return eventtime + check_interval
     def _add_structured_code_list(self, e):
         global STRUCTURED_CODE_LIST
         try:
@@ -1061,6 +1122,41 @@ class PrinterExtruder:
             web_request.send({'state': 'success'})
         except Exception as e:
             logging.error(f'failed to set extruder temp: {str(e)}')
+            web_request.send({'state': 'error', 'message': str(e)})
+
+    def _set_nozzle_diameter(self, diameter):
+        self.nozzle_diameter = diameter
+        self.nozzle_config_info['diameter'] = diameter
+        if not self.printer.update_snapmaker_config_file(self.nozzle_config_path, self.nozzle_config_info):
+            logging.error("failed to save nozzle diameter config")
+
+    def _handle_control_nozzle_diameter(self, web_request):
+        try:
+            extruder_index = web_request.get_int('extruder', None)
+            nozzle_diameter = web_request.get_float('diameter', self.nozzle_diameter)
+
+            print_stats = self.printer.lookup_object('print_stats', None)
+            if print_stats is not None and print_stats.state in ['printing', 'paused']:
+                raise ValueError("Cannot change nozzle diameter during printing!")
+
+            if extruder_index is None:
+                raise ValueError("extruder must be specified!")
+
+            if nozzle_diameter not in VALID_NOZZLE_DIAMETERS:
+                raise ValueError(f"nozzle_diameter error: {nozzle_diameter}")
+
+            extruder_obj = self.printer.lookup_object('extruder', None)
+            if extruder_index != 0:
+                extruder_obj = self.printer.lookup_object(f'extruder{extruder_index}', None)
+            if extruder_obj is None:
+                raise ValueError("extruder not found!")
+
+            if nozzle_diameter != extruder_obj.nozzle_diameter:
+                extruder_obj._set_nozzle_diameter(nozzle_diameter)
+
+            web_request.send({'state': 'success'})
+
+        except Exception as e:
             web_request.send({'state': 'error', 'message': str(e)})
 
     def cmd_M104(self, gcmd, wait=False):
@@ -1154,7 +1250,7 @@ class PrinterExtruder:
                 raise gcmd.error(error_msg_prefix, action="pause")
 
         try:
-            while retry_count < self.retry_switch_limit:
+            while retry_count <= self.retry_switch_limit:
                 try:
                     if retry_count > 0:
                         # gcode.run_script_from_command("G28 X Y")
@@ -1167,7 +1263,8 @@ class PrinterExtruder:
                                 if len(extruder_list) > retry_extruder_id:
                                     switch_recorder.add_retry_count(extruder_list[retry_extruder_id].name)
                             self._cmd_SWITCH_EXTRUDER(gcmd, forced_park=True)
-                    self._cmd_SWITCH_EXTRUDER(gcmd)
+                    need_skip_act = (retry_count+1 >= self.retry_switch_limit)
+                    self._cmd_SWITCH_EXTRUDER(gcmd, skip_act_check=need_skip_act)
                     break
 
                 except ExtruderUnknownParkStatus as e:
@@ -1194,7 +1291,7 @@ class PrinterExtruder:
                 toolhead.get_kinematics().note_y_not_homed()
             raise
 
-    def _cmd_SWITCH_EXTRUDER(self, gcmd, forced_park=False):
+    def _cmd_SWITCH_EXTRUDER(self, gcmd, forced_park=False, skip_act_check=False):
         switch_complete = restore_state = False
         toolhead = self.printer.lookup_object('toolhead')
         gcode = self.printer.lookup_object('gcode')
@@ -1222,6 +1319,8 @@ class PrinterExtruder:
                     gcode.run_script_from_command("G28")
             toolhead.wait_moves()
             self.activating_move = True
+            toolhead.set_grab_complete(False)
+            self.fan_speed_exception_cnt = 0
             gcmd.respond_info("{} -> {}".format(toolhead.get_extruder().name, self.name))
             forced_skip = False
             retry_extruder_id = None
@@ -1487,7 +1586,8 @@ class PrinterExtruder:
                     for i in range(10):
                         extruder_state = self.get_extruder_activate_status()
                         retry_extruder_id = self.check_allow_retry_switch_extruder()
-                        if (extruder_state[0][1] == 0 and extruder_state[0][0] == self.name):
+                        if ((extruder_state[0][1] == 0 and extruder_state[0][0] == self.name) or
+                            (skip_act_check and retry_extruder_id == self.extruder_num)):
                             break
                         else:
                             if i == 9:
@@ -1921,6 +2021,17 @@ class PrinterExtruder:
                 self.xy_park_position[:] = original_xy_park_position
             except:
                 logging.warning("Failed to restore XY park position")
+
+    def cmd_SET_NOZZLE_DIAMETER(self, gcmd):
+        diameter =  gcmd.get_float('DIAMETER')
+        if diameter not in VALID_NOZZLE_DIAMETERS:
+            raise gcmd.error("Invalid nozzle diameter")
+
+        print_stats = self.printer.lookup_object('print_stats', None)
+        if print_stats is not None and print_stats.state in ['printing', 'paused']:
+            raise gcmd.error("Cannot change nozzle diameter during printing!")
+
+        self._set_nozzle_diameter(diameter)
 
 # Dummy extruder class used when a printer has no extruder at all
 class DummyExtruder:
