@@ -14,13 +14,19 @@ CONFIG_FILES=(
   fluidd.cfg
   xyz_offset_calibration.cfg
 )
+# Stage host files outside /home/lava. The active /home/lava/klipper tree can
+# survive firmware updates, so S48-sync-klipper-host-files copies these staged
+# files into place before Klipper starts.
 HOST_FILE_MAPPINGS=(
-  "klippy/toolhead.py:home/lava/klipper/klippy/toolhead.py"
+  "klippy/toolhead.py:usr/share/snapmaker-klipper/klippy/toolhead.py"
+  "klippy/kinematics/extruder.py:usr/share/snapmaker-klipper/klippy/kinematics/extruder.py"
+  "klippy/extras/stealth_mode.py:usr/share/snapmaker-klipper/klippy/extras/stealth_mode.py"
 )
 
 install_preserve_target() {
   local source_file="$1"
   local target_file="$2"
+  local default_mode="${3:-600}"
 
   if [[ -f "$target_file" ]]; then
     install -m "$(stat -c '%a' "$target_file")" \
@@ -28,7 +34,22 @@ install_preserve_target() {
       -g "$(stat -c '%g' "$target_file")" \
       "$source_file" "$target_file"
   else
-    install -D -m 600 "$source_file" "$target_file"
+    install -D -m "$default_mode" "$source_file" "$target_file"
+  fi
+}
+
+install_with_mode() {
+  local source_file="$1"
+  local target_file="$2"
+  local mode="$3"
+
+  if [[ -f "$target_file" ]]; then
+    install -m "$mode" \
+      -o "$(stat -c '%u' "$target_file")" \
+      -g "$(stat -c '%g' "$target_file")" \
+      "$source_file" "$target_file"
+  else
+    install -D -m "$mode" "$source_file" "$target_file"
   fi
 }
 
@@ -48,12 +69,13 @@ for config_name in "${CONFIG_FILES[@]}"; do
     continue
   fi
 
-  install_preserve_target "$source_file" "$target_file"
+  install_preserve_target "$source_file" "$target_file" 600
 
   echo "   - synced $config_name"
 done
 
-echo ">> Syncing selected repo-owned Klipper host files into /home/lava/klipper"
+echo ">> Staging repo-owned Klipper host files into /usr/share/snapmaker-klipper"
+echo "   (runtime sync to /home/lava/klipper is handled by S48-sync-klipper-host-files)"
 
 for mapping in "${HOST_FILE_MAPPINGS[@]}"; do
   source_rel="${mapping%%:*}"
@@ -66,6 +88,6 @@ for mapping in "${HOST_FILE_MAPPINGS[@]}"; do
     continue
   fi
 
-  install_preserve_target "$source_file" "$target_file"
+  install_with_mode "$source_file" "$target_file" 644
   echo "   - synced $source_rel"
 done

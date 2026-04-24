@@ -49,6 +49,10 @@ make overlays PROFILE=extended
 - Rebuilt Rockchip upgrade image: `tmp/firmware/update.img`
 - Rebuilt rootfs for inspection: `tmp/firmware/rootfs/`
 
+The rebuilt rootfs is packed as SquashFS xz. The U1 kernel enables xz support,
+and the smaller image keeps the full `upgrade all` package within the stock
+on-device unpack path's practical limits.
+
 ### Flashing
 
 For development, the repository now has a verified build path for the SoC image. The on-device upgrade script extracted from the official firmware supports these commands:
@@ -58,7 +62,9 @@ scp tmp/firmware/update.img root@<u1-ip>:/tmp/
 ssh root@<u1-ip> /home/lava/bin/systemUpgrade.sh upgrade soc /tmp/update.img
 ```
 
-The same upgrade script also advertises a full-UPFILE path:
+The same upgrade script also advertises a full-UPFILE path. For host-only
+changes such as Runtime Stealth Mode, prefer `upgrade soc`; a full upgrade may
+also flash MCU payloads and is unnecessary unless that is intentional:
 
 ```bash
 scp firmware/firmware.bin root@<u1-ip>:/tmp/upgrade.bin
@@ -66,6 +72,77 @@ ssh root@<u1-ip> /home/lava/bin/systemUpgrade.sh upgrade all /tmp/upgrade.bin
 ```
 
 The software-side build and repack flow is validated in this repository. Hardware flashing and feature verification on a real printer are still pending.
+
+## Runtime Stealth Mode
+
+This fork includes a Prusa-style runtime Stealth mode. It does not switch the
+TMC drivers into StealthChop at runtime. Instead, it applies hard motion caps in
+Klipper's central toolhead planner and can use a separate pressure advance
+profile while Stealth mode is active.
+
+The default limits are configured in `lava/printer.cfg`:
+
+```ini
+[stealth_mode]
+velocity: 160
+accel: 2500
+```
+
+### Mode Commands
+
+Enable Stealth mode:
+
+```gcode
+SET_STEALTH_MODE MODE=STEALTH
+```
+
+Return to Normal mode:
+
+```gcode
+SET_STEALTH_MODE MODE=NORMAL
+```
+
+Report the current mode:
+
+```gcode
+SET_STEALTH_MODE
+```
+
+On every mode switch, Klipper waits for already planned moves to finish before
+applying the new limits and pressure advance profile. After a restart, the
+printer always starts in Normal mode.
+
+While Stealth mode is active, slicer G-code, macros, and normal Python helper
+paths may request higher velocity or acceleration values, but actual X/Y
+toolhead moves are capped by the Stealth limits. Low-level direct-stepper
+features such as `FORCE_MOVE` or `manual_stepper` bypass the normal toolhead
+planner and are not part of this safety guarantee.
+
+### Pressure Advance Profiles
+
+Normal Klipper pressure advance still works:
+
+```gcode
+SET_PRESSURE_ADVANCE ADVANCE=0.040
+```
+
+This fork also supports a separate Stealth pressure advance value:
+
+```gcode
+SET_PRESSURE_ADVANCE ADVANCE=0.040 STEALTH=0.060
+```
+
+`ADVANCE` updates the Normal-mode value. `STEALTH` updates the Stealth-mode
+value. `SMOOTH_TIME` remains shared between both modes:
+
+```gcode
+SET_PRESSURE_ADVANCE ADVANCE=0.040 STEALTH=0.060 SMOOTH_TIME=0.040
+```
+
+If `SET_PRESSURE_ADVANCE STEALTH=...` is called while the printer is currently
+in Normal mode, the Stealth value is stored but the active pressure advance does
+not change until Stealth mode is enabled. The same applies in reverse for
+`ADVANCE=...` while Stealth mode is active.
 
 ## Development
 
