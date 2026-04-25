@@ -1,7 +1,7 @@
 # PLANS_Stealthmode.md
 
 ## Objective
-Add a Prusa-style runtime `Stealth` mode to the Snapmaker U1 Klipper fork.
+Add a runtime `Stealth` mode to the Snapmaker U1 Klipper fork.
 
 Target behavior:
 - switch between `normal` and `stealth` via G-Code during idle or print
@@ -23,7 +23,7 @@ Target behavior:
 ### Phase 1 - Config and runtime object
 1. Add a new `[stealth_mode]` config section and loadable Klipper extra module
 2. Define config keys:
-   - `velocity: 160`
+   - `velocity: 120`
    - `accel: 2500`
 3. Register a new command:
    - `SET_STEALTH_MODE MODE=STEALTH|NORMAL`
@@ -51,10 +51,13 @@ Acceptance checks:
 ### Phase 3 - Runtime transition behavior
 1. Drain planned motion before switching mode so the new limits and PA profile
    start at a clean boundary
-2. Keep the mode Prusa-analog: no runtime TMC driver mode switching
+2. Switch X/Y TMC2240 drivers into StealthChop while Stealth mode is active
+   and restore the prior normal driver state when leaving Stealth
 
 Acceptance checks:
 - entering stealth performs a motion sync before applying the new mode
+- entering stealth enables X/Y StealthChop after the motion sync
+- leaving stealth restores the previous X/Y driver state before uncapping motion
 - leaving stealth restores the requested non-stealth motion limits
 
 ### Phase 4 - Pressure advance dual-profile support
@@ -112,7 +115,8 @@ Acceptance checks:
 ---
 
 ## Decisions
-- scope is X/Y-inspired motion limiting only; no runtime TMC mode switching
+- scope is X/Y runtime Stealth mode with hard motion caps and X/Y TMC2240
+  StealthChop switching
 - hard caps cover only velocity and acceleration
 - config uses a dedicated `[stealth_mode]` section
 - runtime command is `SET_STEALTH_MODE MODE=STEALTH|NORMAL`
@@ -126,8 +130,8 @@ Acceptance checks:
 - keep legacy `toolhead` status keys `max_velocity` / `max_accel` as requested
   values too; expose capped runtime limits as `effective_max_velocity` /
   `effective_max_accel`
-- use Prusa Core One baseline values for first config defaults:
-  - velocity `160`
+- use conservative U1 Stealth defaults:
+  - velocity `120`
   - accel `2500`
 
 ---
@@ -136,10 +140,10 @@ Acceptance checks:
 - Prusa reference behavior validated from `Prusa-Firmware-Buddy`:
   stealth mode stores user motion settings separately and applies hard working
   limits with `min(user_setting, stealth_limit)`.
-- Runtime TMC StealthChop switching was intentionally removed after review
-  because Core One's local code path does not use it for this mode and the
-  imported limits are therefore not evidence for safe forced-StealthChop
-  operation on the U1.
+- Runtime TMC StealthChop switching was reintroduced for X/Y after hardware
+  testing direction changed. The implementation drains planned motion first,
+  enables X/Y `en_pwm_mode` only while Stealth is active, and restores the
+  previous normal driver state before removing the Stealth motion caps.
 - Homing, bed-mesh, probing, docking, and similar helper paths should remain
   mostly untouched. The hard cap belongs in `toolhead.Move`, because normal
   helper code eventually routes motion through `toolhead.move()` or
@@ -162,17 +166,21 @@ Acceptance checks:
     unpack path's practical limit; the U1 kernel has `CONFIG_SQUASHFS_XZ=y`
   - the rebuilt `firmware.bin` was validated with Snapmaker's own
     `upfileUnpack` from the target rootfs in the ARM64 Docker environment
+  - updated Stealth defaults to `velocity: 120`, `accel: 2500`
+  - reintroduced runtime X/Y StealthChop switching with restore of the prior
+    normal TMC2240 `en_pwm_mode` state
   - final artifact hashes:
     - `firmware/firmware.bin`
-      `bf6db29a7f30a94f64be2f544d1ea23a0f74ecf9ff6562065c4c816316989b1c`
+      `f836a68a4cb7951f963f388a67957b2785af60420e5582ac37bb2b5f7948ecbe`
     - `tmp/firmware/update.img`
-      `aeeccb6b72146fedc9b410cb3264c9b14755443df4c5a4445b73b9cdbd227f16`
+      `5bd64ed0eca0e2f4d7cb54b23a6aa42b8bdf7cfadd5c2c2b27a5df0bdf19156f`
 
 ## Handoff
 - Agent: Codex
 - Date: 2026-04-24
 - Completed this session:
-  - implemented Prusa-style Stealth mode without runtime TMC driver switching
+  - implemented Stealth mode with hard motion caps and X/Y StealthChop
+    switching
   - added central requested/effective toolhead motion limits
   - added separate normal/stealth pressure advance profile handling
   - fixed status reporting to avoid helper modules overwriting requested limits

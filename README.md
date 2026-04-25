@@ -75,16 +75,16 @@ The software-side build and repack flow is validated in this repository. Hardwar
 
 ## Runtime Stealth Mode
 
-This fork includes a Prusa-style runtime Stealth mode. It does not switch the
-TMC drivers into StealthChop at runtime. Instead, it applies hard motion caps in
-Klipper's central toolhead planner and can use a separate pressure advance
-profile while Stealth mode is active.
+This fork includes a runtime Stealth mode. It applies hard motion caps in
+Klipper's central toolhead planner, switches the X/Y TMC2240 drivers into
+StealthChop while Stealth mode is active, and can use a separate pressure
+advance profile.
 
 The default limits are configured in `lava/printer.cfg`:
 
 ```ini
 [stealth_mode]
-velocity: 160
+velocity: 120
 accel: 2500
 ```
 
@@ -111,6 +111,11 @@ SET_STEALTH_MODE
 On every mode switch, Klipper waits for already planned moves to finish before
 applying the new limits and pressure advance profile. After a restart, the
 printer always starts in Normal mode.
+
+While entering Stealth mode, Klipper stores the current X/Y `en_pwm_mode`
+driver state and sets it to StealthChop. While leaving Stealth mode, the stored
+normal driver state is restored before the higher Normal-mode motion limits are
+made effective again.
 
 While Stealth mode is active, slicer G-code, macros, and normal Python helper
 paths may request higher velocity or acceleration values, but actual X/Y
