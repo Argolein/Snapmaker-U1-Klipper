@@ -76,6 +76,7 @@ The user approved importing the minimal support layers required by the chosen fe
 - **Build environment**: Docker-based ARM64 development environment, following the Extended Firmware model
 - **Feature 3 includes**: placeholder keep files may be kept for clarity, but they are not required to avoid a Klipper wildcard-include error
 - **Camera build model**: `v4l2-mpp` is not a mystery prebuilt binary; the current Extended Firmware builds it from a pinned external git repository during image build
+- **Runtime Stealth Mode**: removed from this branch by reverting commits `7e5a95c9` and `09677365` per user request
 
 ---
 
@@ -638,55 +639,31 @@ Only after the SoC-only path is confirmed should `firmware.bin` / `upgrade all` 
   - [x] Flash to printer
   - [x] Verify selected features on hardware
   - [x] Document final build/flash workflow
+- [x] Maintenance: Runtime Stealth Mode removal
+  - [x] Reverted `7e5a95c9` (`Stealthmode with Stealthchop`)
+  - [x] Reverted `09677365` (`Stealth Mode`)
+  - [x] Confirmed only upstream Klipper/TMC stealthchop references remain in source search results
 
 ---
 
 ## Handoff
 - Agent: Codex
-- Date: 2026-04-04
+- Date: 2026-04-26
 - Completed this session:
-  - Validated `PLANS.md` against the current repo and `SnapmakerU1-Extended-Firmware`
-  - Corrected the false wildcard-include assumption
-  - Confirmed the image-builder infrastructure listed in the plan exists in the Extended Firmware repo
-  - Confirmed current feature dependencies and support overlays for Remote Screen, Camera, and USB Ethernet
-  - Corrected the camera assumption from “unknown binary source” to “external pinned source build”
-  - Corrected the curl SHA256 and updated the architecture to match the user's stated target
-  - Imported the image-builder scripts, helper scripts, tool sources, Dockerfile, `vars.mk`, and `dev.sh`
-  - Imported `deps/screen-apps/`
-  - Integrated image-builder targets into the root `Makefile`
-  - Isolated pure image-builder targets from the MCU build graph in the root `Makefile`
-  - Added the baseline `overlays/` structure
-  - Imported the minimal support overlays for include config, nginx `fluidd.d`, DHCP persistence, MAC persistence, and USB NIC firmware files
-  - Imported the low-risk feature overlays for extended includes, IPv6 disable, and curl
-  - Imported the medium-risk feature overlays for OEM disk usage and USB Ethernet
-  - Verified overlay ordering from the root builder with `make overlays PROFILE=extended`
-  - Verified tool dispatch from the root builder with `make -n tools`
-  - Verified the imported builder in Docker with `./dev.sh make tools`, `./dev.sh make firmware`, and `./dev.sh make extract PROFILE=extended`
-  - Imported the missing Phase 5 overlays for Remote Screen and Camera
-  - Added a repo-owned host-sync overlay for `lava/*.cfg`
-  - Corrected the imported Remote Screen HTML install path to `/usr/local/share/fb-http/html`
-  - Completed a full end-to-end Docker build to `firmware/firmware.bin`
-  - Verified the rebuilt rootfs contains the selected feature files and config hooks
-  - Removed the stale USB-Ethernet `dhcpcd.conf` patch after confirming stock firmware `1.2.0.106` already enables `eth0`
-  - Documented the current build outputs and flash commands in `README.md`
-  - Documented the exact verified image build workflow and overlay order in this `PLANS.md`
-  - Documented the recommended first hardware flash procedure in this `PLANS.md`
-  - Imported the timelapse compatibility stub from Extended Firmware for future builds
-  - Rebuilt `firmware/firmware.bin` after changing the Remote Screen defaults and cleaning up the `timelapse` stub
-  - Renamed the runtime config path from `extended2.cfg` to `extended.cfg` across the imported feature set
-  - Added first-boot migration from `extended2.cfg` to `extended.cfg` for existing printers and rebuilt the firmware image
-  - Flashed the resulting firmware to a real U1 and validated the selected features on hardware
-  - Added `common/07-persist-ssh-hostkeys` and rebuilt the image so Dropbear host keys are persisted in `/oem/dropbear`
+  - Reverted `7e5a95c9` (`Stealthmode with Stealthchop`) first
+  - Reverted `09677365` (`Stealth Mode`) second
+  - Removed the Runtime Stealth Mode source, config, docs, firmware overlay hook, and related host-sync script changes from the current branch state
+  - Searched for remaining Stealth Mode references and found only upstream Klipper/TMC stealthchop code
+  - Updated this plan with the removal decision and current handoff
 - Stopped at:
-  - New image build is complete; SSH host key persistence still needs one hardware reboot check on the printer
+  - Revert changes are applied in the working tree and index; no commit was created
 - Next step:
-  - Flash the rebuilt image, reboot once, and confirm the SSH host key no longer changes between boots
+  - Review the diff, run the desired firmware/build checks, then commit the applied revert changes if they look correct
 - Open blockers:
   - none
 - Decisions made this session:
-  - this repo must own the resulting image build, not only patch a stock firmware image
-  - minimal support overlays are allowed when required by the selected 7 features
-  - USB NIC firmware blobs from `ccde0b8` are in scope
+  - Runtime Stealth Mode is no longer needed in this branch
+  - Revert the dependent commits in reverse chronological order: `7e5a95c9`, then `09677365`
 
 ---
 

@@ -16,10 +16,10 @@ class Move:
         self.toolhead = toolhead
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
-        self.accel = toolhead.get_effective_max_accel()
+        self.accel = toolhead.max_accel
         self.junction_deviation = toolhead.junction_deviation
         self.timing_callbacks = []
-        velocity = min(speed, toolhead.get_effective_max_velocity())
+        velocity = min(speed, toolhead.max_velocity)
         self.is_kinematic_move = True
         self.axes_d = axes_d = [end_pos[i] - start_pos[i] for i in (0, 1, 2, 3)]
         self.move_d = move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
@@ -236,7 +236,6 @@ class ToolHead:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
-        self.stealth_mode = None
         self.all_mcus = [
             m for n, m in self.printer.lookup_objects(module='mcu')]
         self.mcu = self.all_mcus[0]
@@ -249,10 +248,8 @@ class ToolHead:
         self.max_physical_extruder_num = config.getint('max_physical_extruder_num')
 
         # Velocity and acceleration control
-        self._requested_max_velocity = config.getfloat('max_velocity', above=0.)
-        self._requested_max_accel = config.getfloat('max_accel', above=0.)
-        self._effective_max_velocity = self._requested_max_velocity
-        self._effective_max_accel = self._requested_max_accel
+        self.max_velocity = config.getfloat('max_velocity', above=0.)
+        self.max_accel = config.getfloat('max_accel', above=0.)
         min_cruise_ratio = 0.5
         if config.getfloat('minimum_cruise_ratio', None) is None:
             req_accel_to_decel = config.getfloat('max_accel_to_decel', None,
@@ -338,48 +335,6 @@ class ToolHead:
                    "manual_probe", "tuning_tower", "machine_state_manager"]
         for module_name in modules:
             self.printer.load_object(config, module_name)
-
-    @property
-    def max_velocity(self):
-        return self._requested_max_velocity
-
-    @max_velocity.setter
-    def max_velocity(self, value):
-        self._requested_max_velocity = value
-        self._apply_motion_limit_caps()
-
-    @property
-    def max_accel(self):
-        return self._requested_max_accel
-
-    @max_accel.setter
-    def max_accel(self, value):
-        self._requested_max_accel = value
-        self._apply_motion_limit_caps()
-
-    def _apply_motion_limit_caps(self):
-        max_velocity = self._requested_max_velocity
-        max_accel = self._requested_max_accel
-        if self.stealth_mode is not None and self.stealth_mode.is_enabled():
-            max_velocity = min(max_velocity,
-                               self.stealth_mode.get_velocity_limit())
-            max_accel = min(max_accel, self.stealth_mode.get_accel_limit())
-        self._effective_max_velocity = max_velocity
-        self._effective_max_accel = max_accel
-
-    def register_stealth_mode(self, stealth_mode):
-        self.stealth_mode = stealth_mode
-        self.refresh_stealth_limits()
-
-    def refresh_stealth_limits(self):
-        self._apply_motion_limit_caps()
-        self._calc_junction_deviation()
-
-    def get_effective_max_velocity(self):
-        return self._effective_max_velocity
-
-    def get_effective_max_accel(self):
-        return self._effective_max_accel
 
     def _handle_flow_calibration_begin(self):
         logging.info("toolhead: begin flow calibration")
@@ -678,8 +633,6 @@ class ToolHead:
                      'position': self.Coord(*self.commanded_pos),
                      'max_velocity': self.max_velocity,
                      'max_accel': self.max_accel,
-                     'effective_max_velocity': self.get_effective_max_velocity(),
-                     'effective_max_accel': self.get_effective_max_accel(),
                      'minimum_cruise_ratio': self.min_cruise_ratio,
                      'square_corner_velocity': self.square_corner_velocity})
         return res
@@ -732,16 +685,11 @@ class ToolHead:
             self.do_kick_flush_timer = False
             self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
     def get_max_velocity(self):
-        return self.get_effective_max_velocity(), self.get_effective_max_accel()
-    def get_requested_max_velocity(self):
-        return self._requested_max_velocity
-    def get_requested_max_accel(self):
-        return self._requested_max_accel
+        return self.max_velocity, self.max_accel
     def _calc_junction_deviation(self):
         scv2 = self.square_corner_velocity**2
-        max_accel = self.get_effective_max_accel()
-        self.junction_deviation = scv2 * (math.sqrt(2.) - 1.) / max_accel
-        self.max_accel_to_decel = max_accel * (1. - self.min_cruise_ratio)
+        self.junction_deviation = scv2 * (math.sqrt(2.) - 1.) / self.max_accel
+        self.max_accel_to_decel = self.max_accel * (1. - self.min_cruise_ratio)
 
     def cmd_SWITCH_OF_EXTENDED_EXTRUDER(self, gcmd):
         index = gcmd.get_int('INDEX')
@@ -800,8 +748,7 @@ class ToolHead:
                "max_accel: %.6f\n"
                "minimum_cruise_ratio: %.6f\n"
                "square_corner_velocity: %.6f" % (
-                   self.get_effective_max_velocity(),
-                   self.get_effective_max_accel(),
+                   self.max_velocity, self.max_accel,
                    self.min_cruise_ratio, self.square_corner_velocity))
         self.printer.set_rollover_info("toolhead", "toolhead: %s" % (msg,), log=False)
         if (max_velocity is None and max_accel is None

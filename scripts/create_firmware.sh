@@ -108,9 +108,7 @@ if FILES=$(find "$ROOTFS_DIR" -type f -exec file {} + | grep "ELF" | grep -v "AR
 fi
 
 echo ">> Create squash filesystem..."
-# The U1 kernel enables SquashFS xz support. Using xz keeps the full UPFILE
-# small enough for the stock on-device `upgrade all` unpack path.
-mksquashfs "$ROOTFS_DIR" "$BUILD_DIR/rk-unpacked/rootfs-v2.img" -comp xz -b 1048576
+mksquashfs "$ROOTFS_DIR" "$BUILD_DIR/rk-unpacked/rootfs-v2.img" -comp gzip
 
 echo ">> Replace rootfs.img in firmware..."
 mv -v "$BUILD_DIR/rk-unpacked"/{rootfs-v2,rootfs}.img

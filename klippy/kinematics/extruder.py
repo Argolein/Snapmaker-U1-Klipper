@@ -261,11 +261,8 @@ class ExtruderStepper:
         self.reactor = self.printer.get_reactor()
         self.name = config.get_name().split()[-1]
         self.extruder_index = self._get_extruder_index(self.name)
-        self.stealth_mode_enabled = False
         self.pressure_advance = self.pressure_advance_smooth_time = 0.
         self.config_pa = config.getfloat('pressure_advance', 0., minval=0.)
-        self.config_pa_stealth = config.getfloat(
-            'pressure_advance_stealth', self.config_pa, minval=0.)
         self.config_smooth_time = config.getfloat(
                 'pressure_advance_smooth_time', 0.040, above=0., maxval=.200)
         # Setup stepper
@@ -295,11 +292,7 @@ class ExtruderStepper:
     def _handle_connect(self):
         toolhead = self.printer.lookup_object('toolhead')
         toolhead.register_step_generator(self.stepper.generate_steps)
-        stealth_mode = self.printer.lookup_object('stealth_mode', None)
-        self.stealth_mode_enabled = bool(
-            stealth_mode is not None and stealth_mode.is_enabled())
-        self._set_pressure_advance(self._get_active_pressure_advance(),
-                                   self.config_smooth_time)
+        self._set_pressure_advance(self.config_pa, self.config_smooth_time)
     def _get_extruder_index(self, extruder_name):
         if extruder_name is not None and extruder_name.startswith('extruder'):
             num_str = extruder_name[8:]
@@ -308,11 +301,8 @@ class ExtruderStepper:
             raise ValueError("Invalid extruder name")
     def get_status(self, eventtime):
         return {'pressure_advance': self.pressure_advance,
-                'pressure_advance_normal': self.config_pa,
-                'pressure_advance_stealth': self.config_pa_stealth,
                 'smooth_time': self.pressure_advance_smooth_time,
-                'motion_queue': self.motion_queue,
-                'stealth_mode': self.stealth_mode_enabled}
+                'motion_queue': self.motion_queue}
     def find_past_position(self, print_time):
         mcu_pos = self.stepper.get_past_mcu_position(print_time)
         return self.stepper.mcu_to_commanded_position(mcu_pos)
@@ -348,23 +338,6 @@ class ExtruderStepper:
                                     pressure_advance, new_smooth_time))
         self.pressure_advance = pressure_advance
         self.pressure_advance_smooth_time = smooth_time
-    def _get_active_pressure_advance(self):
-        if self.stealth_mode_enabled:
-            return self.config_pa_stealth
-        return self.config_pa
-    def apply_stealth_mode(self, enabled):
-        old_pressure_advance = self.pressure_advance
-        old_smooth_time = self.pressure_advance_smooth_time
-        self.stealth_mode_enabled = bool(enabled)
-        self._set_pressure_advance(self._get_active_pressure_advance(),
-                                   self.config_smooth_time)
-        virtual_sdcard = self.printer.lookup_object('virtual_sdcard', None)
-        if (virtual_sdcard is not None and
-            (old_pressure_advance != self.pressure_advance or
-             old_smooth_time != self.pressure_advance_smooth_time)):
-            virtual_sdcard.record_pl_print_pressure_advance(
-                {self.name: [self.pressure_advance,
-                             self.pressure_advance_smooth_time]})
     cmd_SET_PRESSURE_ADVANCE_help = "Set pressure advance parameters"
     def cmd_default_SET_PRESSURE_ADVANCE(self, gcmd):
         extruder = self.printer.lookup_object('toolhead').get_extruder()
@@ -386,43 +359,23 @@ class ExtruderStepper:
                 gcmd.respond_info("flow calibration enabled, so not take effect.")
                 return
 
-        pressure_advance = gcmd.get_float('ADVANCE', None, minval=0.)
-        stealth_pressure_advance = gcmd.get_float('STEALTH', None, minval=0.)
-        smooth_time = gcmd.get_float('SMOOTH_TIME', None,
+        pressure_advance = gcmd.get_float('ADVANCE', self.pressure_advance,
+                                          minval=0.)
+        smooth_time = gcmd.get_float('SMOOTH_TIME',
+                                     self.pressure_advance_smooth_time,
                                      minval=0., maxval=.200)
-
-        if pressure_advance is not None:
-            self.config_pa = pressure_advance
-        if stealth_pressure_advance is not None:
-            self.config_pa_stealth = stealth_pressure_advance
-        if smooth_time is not None:
-            self.config_smooth_time = smooth_time
-
-        active_pressure_advance = self._get_active_pressure_advance()
-        active_smooth_time = self.config_smooth_time
 
         old_pressure_advance = self.pressure_advance
         old_smooth_time = self.pressure_advance_smooth_time
-        should_apply = False
-        if smooth_time is not None and active_smooth_time != old_smooth_time:
-            should_apply = True
-        if active_pressure_advance != old_pressure_advance:
-            should_apply = True
-        if should_apply:
-            self._set_pressure_advance(active_pressure_advance,
-                                       active_smooth_time)
+        self._set_pressure_advance(pressure_advance, smooth_time)
         virtual_sdcard = self.printer.lookup_object('virtual_sdcard', None)
         if (virtual_sdcard is not None and
             (old_pressure_advance != self.pressure_advance or
              old_smooth_time != self.pressure_advance_smooth_time)):
             virtual_sdcard.record_pl_print_pressure_advance({self.name: [self.pressure_advance, self.pressure_advance_smooth_time]})
         msg = ("pressure_advance: %.6f\n"
-               "pressure_advance_normal: %.6f\n"
-               "pressure_advance_stealth: %.6f\n"
-               "active_pressure_advance: %.6f\n"
                "pressure_advance_smooth_time: %.6f"
-               % (self.pressure_advance, self.config_pa, self.config_pa_stealth,
-                  self.pressure_advance, self.config_smooth_time))
+               % (pressure_advance, smooth_time))
         self.printer.set_rollover_info(self.name, "%s: %s" % (self.name, msg))
         gcmd.respond_info(msg, log=False)
     cmd_SET_E_ROTATION_DISTANCE_help = "Set extruder rotation distance"
