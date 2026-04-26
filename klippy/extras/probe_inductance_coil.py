@@ -830,10 +830,11 @@ class ProbeSessionHelper:
                 raise gcmd.error(message)
             extruder = toolhead.get_extruder()
             activate_status = extruder.get_extruder_activate_status()
+            retry_extruder_id = extruder.check_allow_retry_switch_extruder()
             grab_hall_sensor_type = None
             if hasattr(extruder, 'grab_hall_sensor_type') and extruder.grab_hall_sensor_type:
                 grab_hall_sensor_type = extruder.grab_hall_sensor_type
-            if activate_status[0][1] != 0:
+            if activate_status[0][1] != 0 and retry_extruder_id is None:
                 if grab_hall_sensor_type and activate_status[0][1] == 1:
                     error_msg = f"Probing abort: No extruder is picked up, all extruders are parked."
                     message = '{"coded": "0003-0530-0000-0013", "msg":"%s"}' % (error_msg)
@@ -861,7 +862,7 @@ class ProbeSessionHelper:
                 error_msg = f"Probing abort: Extruder parking status error, {error_msg}"
                 message = '{"coded": "0003-0530-0000-0004", "msg":"%s"}' % (error_msg)
                 raise gcmd.error(message)
-            if extruder.name != activate_status[0][0]:
+            if extruder.name != activate_status[0][0] and retry_extruder_id != extruder.extruder_num:
                 error_msg = f"The extruder activation status does not match, current: {extruder.name}, detected: {activate_status[0][0]}"
                 message = '{"coded": "0003-0530-0000-0005", "msg":"%s"}' % (error_msg)
                 raise gcmd.error(message)
@@ -1123,6 +1124,12 @@ class ProbePointsHelper:
         # Perform automatic probing
         self.lift_speed = probe.get_probe_params(gcmd)['lift_speed']
         self.probe_offsets = probe.get_offsets()
+        probe_z_offset = gcmd.get_float("Z_OFFSET", None)
+        if probe_z_offset is not None:
+            self.probe_offsets = (self.probe_offsets[0],
+                                  self.probe_offsets[1],
+                                  probe_z_offset)
+        gcmd.respond_info("z offset: %s" % (self.probe_offsets[2],))
         if self.horizontal_move_z < self.probe_offsets[2]:
             raise gcmd.error("horizontal_move_z can't be less than"
                              " probe's z_offset")
@@ -1689,6 +1696,10 @@ class ExtruderOffsetCalibration:
                 supported_tools = list(self.extruder_mapping.keys())
                 raise gcmd.error(f'EXTRUDER_OFFSET_ACTION_AUTO_CLEAN: Unsupported TOOL_ID={tool_id}. Supported IDs: {supported_tools}')
 
+            extruder_obj = self.printer.lookup_object(extruder, None)
+            if extruder_obj is None:
+                raise gcmd.error(f'EXTRUDER_OFFSET_ACTION_AUTO_CLEAN: Can get extruder:{extruder}')
+
             with self.lock:
                 self.calibration_step = '{}_nozzle_auto_cleaning'.format(extruder)
 
@@ -1703,14 +1714,11 @@ class ExtruderOffsetCalibration:
             #     if pos[1] > safe_move_y_pos:
             #         toolhead.manual_move([None, safe_move_y_pos, None], 200)
 
-            extruder_index = None
-            is_soft = False
-            if tool_id is not None:
-                extruder_index = int(tool_id[1:])
-                is_soft = int(self._get_filament_soft(extruder_index))
+            is_soft = int(self._get_filament_soft(extruder_obj.extruder_index))
             macro = self.printer.lookup_object('gcode_macro _EXTRUDER_OFFSET_ACTION_AUTO_CLEAN_{}'.format(tool_id), None)
             if macro is not None:
-                self.gcode.run_script_from_command("_EXTRUDER_OFFSET_ACTION_AUTO_CLEAN_{} SOFT={}".format(tool_id, is_soft))
+                self.gcode.run_script_from_command("_EXTRUDER_OFFSET_ACTION_AUTO_CLEAN_{} SOFT={} NOZZLE_DIAMETER={}".format(
+                    tool_id, is_soft, extruder_obj.nozzle_diameter))
 
             with self.lock:
                 self.calibration_step = '{}_nozzle_auto_cleaned'.format(extruder)

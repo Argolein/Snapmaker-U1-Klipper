@@ -56,6 +56,9 @@ class WebRequest:
     def get_client_connection(self):
         return self.client_conn
 
+    def get_raw_parameters(self):
+        return self.params
+
     def get(self, item, default=Sentinel, types=None):
         value = self.params.get(item, default)
         if value is Sentinel:
@@ -76,6 +79,9 @@ class WebRequest:
 
     def get_dict(self, item, default=Sentinel):
         return self.get(item, default, types=(dict,))
+
+    def get_list(self, item, default=Sentinel):
+        return self.get(item, default, types=(list,))
 
     def get_method(self):
         return self.method
@@ -244,9 +250,11 @@ class ClientConnection:
             self.request_log.append((eventtime, req))
             try:
                 web_request = WebRequest(self, req)
-            except Exception:
-                logging.exception("webhooks: Error decoding Server Request %s"
-                                  % (req))
+            except Exception as e:
+                # Use logging.error instead of logging.exception to avoid
+                # potential RecursionError during exception string formatting
+                logging.error("webhooks: Error decoding Server Request: %s", req)
+                logging.error("Exception: %s", str(e))
                 continue
             self.reactor.register_callback(
                 lambda e, s=self, wr=web_request: s._process_request(wr))

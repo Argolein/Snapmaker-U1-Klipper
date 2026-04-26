@@ -1200,8 +1200,8 @@ class FilamentFeed:
                     self._set_channel_state(ch, FEED_STA_LOAD_FLUSHING)
                     try:
                         self.toolhead.wait_moves()
-                        self.gcode.run_script_from_command("INNER_FLUSH_FILAMENT TEMP=%d SOFT=%d\r\n" %
-                                            (filament_feed_temp, int(filament_soft)))
+                        self.gcode.run_script_from_command("INNER_FLUSH_FILAMENT TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f\r\n" %
+                                            (filament_feed_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
                         self.toolhead.wait_moves()
                     except:
                         self.channel_error[ch] = FEED_ERR_CUSTOM_GCODE
@@ -1302,8 +1302,8 @@ class FilamentFeed:
                         try:
                             self._set_channel_state(ch, FEED_STA_UNLOAD_DOING)
                             self.toolhead.wait_moves()
-                            self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD TEMP=%d SOFT=%d\r\n"
-                                                            % (filament_feed_temp, int(filament_soft)))
+                            self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f\r\n"
+                                                            % (filament_feed_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
                             self.toolhead.wait_moves()
                         except:
                             self.channel_error[ch] = FEED_ERR_CUSTOM_GCODE
@@ -1378,8 +1378,8 @@ class FilamentFeed:
                         try:
                             self._set_channel_state(ch, FEED_STA_UNLOAD_DOING)
                             self.toolhead.wait_moves()
-                            self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD TEMP=%d SOFT=%d\r\n"
-                                                            % (filament_feed_temp, int(filament_soft)))
+                            self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f\r\n"
+                                                            % (filament_feed_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
                             self.toolhead.wait_moves()
                         except:
                             self.channel_error[ch] = FEED_ERR_CUSTOM_GCODE
@@ -1471,8 +1471,8 @@ class FilamentFeed:
                         try:
                             self._set_channel_state(ch, FEED_STA_MANUAL_EXTRUDING)
                             self.toolhead.wait_moves()
-                            self.gcode.run_script_from_command("INNER_MANUAL_FEED_STAGE_EXTRUDE TEMP=%d SOFT=%d\r\n" %
-                                                               (filament_feed_temp, int(filament_soft)))
+                            self.gcode.run_script_from_command("INNER_MANUAL_FEED_STAGE_EXTRUDE TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f\r\n" %
+                                                               (filament_feed_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
                             self.toolhead.wait_moves()
                         except:
                             self.channel_error[ch] = FEED_ERR_CUSTOM_GCODE
@@ -1496,8 +1496,8 @@ class FilamentFeed:
                         try:
                             self.toolhead.wait_moves()
                             self._set_channel_state(ch, FEED_STA_MANUAL_FLUSHING, True)
-                            self.gcode.run_script_from_command("INNER_MANUAL_FEED_STAGE_FLUSH TEMP=%d SOFT=%d\r\n" %
-                                                (filament_feed_temp, int(filament_soft)))
+                            self.gcode.run_script_from_command("INNER_MANUAL_FEED_STAGE_FLUSH TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f\r\n" %
+                                                (filament_feed_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
                             self.toolhead.wait_moves()
                         except:
                             self.channel_error[ch] = FEED_ERR_CUSTOM_GCODE

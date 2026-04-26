@@ -149,6 +149,9 @@ class VirtualSD:
             "SDCARD_PRINT_FILE", self.cmd_SDCARD_PRINT_FILE,
             desc=self.cmd_SDCARD_PRINT_FILE_help)
         self.gcode.register_command(
+            "SDCARD_PRINT_FILE_WITH_PARAMETERS", self.cmd_SDCARD_PRINT_FILE_WITH_PARAMETERS,
+            desc=self.cmd_SDCARD_PRINT_FILE_WITH_PARAMETERS_help)
+        self.gcode.register_command(
             "SDCARD_PRINT_TEST", self.cmd_SDCARD_PRINT_TEST)
         self.gcode.register_command(
             "SDCARD_PRINT_PL_RESTORE", self.cmd_SDCARD_PRINT_PL_RESTORE)
@@ -335,6 +338,28 @@ class VirtualSD:
         self.rm_power_loss_info()
         self._load_file(gcmd, filename, check_subdirs=True)
         self.do_resume()
+
+    cmd_SDCARD_PRINT_FILE_WITH_PARAMETERS_help = "Loads a SD file and starts the print.  May "\
+        "include files in subdirectories."
+    def cmd_SDCARD_PRINT_FILE_WITH_PARAMETERS(self, gcmd):
+        if self.work_timer is not None:
+            error = '{"coded": "0001-0531-0000-0001", "msg":"%s", "action": "none"}' % ("SD busy")
+            raise gcmd.error(error)
+            # raise gcmd.error("SD busy")
+        print_task_config = self.printer.lookup_object('print_task_config', None)
+        if print_task_config is None:
+            raise gcmd.error("[print_task_config] print_task_config not ready!")
+        print_task_config.cmd_SET_PRINT_TASK_PARAMETERS(gcmd)
+
+        rm_pl_env_file = gcmd.get_int('RM_PL_ENV_FILE', 1)
+        self._reset_file(rm_pl_env_file)
+        filename = gcmd.get("FILENAME")
+        if filename[0] == '/':
+            filename = filename[1:]
+        self.rm_power_loss_info()
+        self._load_file(gcmd, filename, check_subdirs=True)
+        self.do_resume()
+
     def cmd_M20(self, gcmd):
         # List SD card
         files = self.get_file_list()
@@ -413,6 +438,7 @@ class VirtualSD:
                             "Do not delete power-loss info during printing")
                 raise gcmd.error(error_msg)
                 # raise gcmd.error("Do not delete power-loss info during printing")
+        self.gcode.run_script_from_command("TIMELAPSE_STOP FORCE=1\r\n")
         self.rm_power_loss_info()
     def _load_file(self, gcmd, filename, check_subdirs=False, reprint=False):
         files = self.get_file_list(check_subdirs)
@@ -471,6 +497,12 @@ class VirtualSD:
         logging.info("Starting SD card print, file: %s, position %d",
                      self.current_file.name, self.file_position)
         self.reactor.unregister_timer(self.work_timer)
+        exception_manager = self.printer.lookup_object('exception_manager', None)
+        print_task_config = self.printer.lookup_object('print_task_config', None)
+
+        if print_task_config is not None:
+            print_task_config.set_new_print_info()
+
         try:
             self.current_file.seek(self.file_position)
         except:
@@ -494,7 +526,7 @@ class VirtualSD:
         self.pl_env_fan_info_need_update = False
         self.pl_env_fan_info_allow_min_time = None
         self.pl_env_temp_cache = {}
-        exception_manager = self.printer.lookup_object('exception_manager', None)
+
         while not self.must_pause_work:
             if not lines:
                 # Read more data
@@ -906,7 +938,7 @@ class VirtualSD:
             fan_info =  {
                             'M106 S':  ['fan', 'M106', 'speed'],
                             "M106 P2": ['fan_generic cavity_fan', 'M106 P2', 'speed'],
-                            "M106 P3": ['purifier', 'M106 P3', 'fan_speed'],
+                            # "M106 P3": ['purifier', 'M106 P3', 'fan_speed'],
                         }
             for key in fan_info.keys():
                 fan_obj = self.printer.lookup_object(fan_info[key][0], None)
@@ -1585,14 +1617,20 @@ class VirtualSD:
             if len(extruder_temps) > 0:
                 extruder_gcode_id = gcode_tracker.extruder_gcode_id
                 activate_status = toolhead.get_extruder().get_extruder_activate_status()
+                retry_extruder_id = toolhead.get_extruder().check_allow_retry_switch_extruder()
+                extruder = None
                 if activate_status[0][1] == 0:
                     extruder = self.printer.lookup_object(activate_status[0][0], None)
-                    if extruder is not None:
-                        curtime = self.printer.get_reactor().monotonic()
-                        status = extruder.get_status(curtime)
-                        if status['temperature'] + 2 < self.pl_z_hop_temp:
-                            self.gcode.respond_info("power_loss do_resume preheat {}: {}".format(extruder.name, self.pl_z_hop_temp))
-                            self.gcode.run_script_from_command("M109 {} S{} A0".format(extruder.gcode_id, self.pl_z_hop_temp))
+                elif retry_extruder_id is not None and retry_extruder_id < len(extruder_list):
+                    extruder = extruder_list[retry_extruder_id]
+
+                if extruder is not None:
+                    self.gcode.respond_info("power_loss do_resume activate {}: {}!!!!!!".format(extruder.name, extruder_gcode_id))
+                    curtime = self.printer.get_reactor().monotonic()
+                    status = extruder.get_status(curtime)
+                    if status['temperature'] + 2 < self.pl_z_hop_temp:
+                        self.gcode.respond_info("power_loss do_resume preheat {}: {}".format(extruder.name, self.pl_z_hop_temp))
+                        self.gcode.run_script_from_command("M109 {} S{} A0".format(extruder.gcode_id, self.pl_z_hop_temp))
 
             self.gcode.respond_info("power_loss do_resume G28 X Y")
             z_adjust_position = self.get_pl_print_z_adjust_position()
@@ -1623,7 +1661,9 @@ class VirtualSD:
 
             cur_extruder = toolhead.get_extruder()
             activate_status = cur_extruder.get_extruder_activate_status()
-            if activate_status[0][1] == 0 and cur_extruder.name == activate_status[0][0]:
+            retry_extruder_id = cur_extruder.check_allow_retry_switch_extruder()
+            if ((activate_status[0][1] == 0 and cur_extruder.name == activate_status[0][0]) or
+                retry_extruder_id == cur_extruder.extruder_num):
                 pass
             else:
                 raise self.printer.command_error("pre-extrude err, Abnormal activate_status: {}, cur_extruder: {}".format(
@@ -1788,7 +1828,7 @@ class VirtualSD:
             self.gcode.run_script_from_command("M204 S{}".format(gcode_tracker.max_accel))
 
             if self.print_task_config is not None:
-                self.print_task_config.set_reprint_info()
+                self.print_task_config.apply_reprint_info()
 
             if self.work_timer is not None:
                 raise self.printer.command_error("SD busy")

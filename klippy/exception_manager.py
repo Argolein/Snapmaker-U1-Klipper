@@ -20,6 +20,7 @@ class ExceptionList:
     MODULE_ID_PROBE_OR_CALIBRATION       = 530
     MODULE_ID_PRINT_FILE                 = 531
     MODULE_ID_DEFECT_DETECTION           = 532
+    MODULE_ID_PURIFIER                   = 533
     MODULE_ID_SYSTEM                     = 2052
 
     # TOOLHEAD

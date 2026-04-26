@@ -108,6 +108,8 @@ class DefectDetection:
                 self.cmd_DEFECT_DETECTION_DETECT_BED)
         self.gcode.register_command("DEFECT_DETECTION_DETECT_NOZZLE",
                 self.cmd_DEFECT_DETECTION_DETECT_NOZZLE)
+        self.gcode.register_command("DEFECT_DETECT_NOODLE_FIRST",
+                self.cmd_DEFECT_DETECT_NOODLE_FIRST)
 
         self.printer.register_event_handler('klippy:ready',
                 self._handle_ready)
@@ -391,6 +393,34 @@ class DefectDetection:
                                         params,
                                         self.response_callback)
 
+    def _request_detect_noodle_first_sync(self):
+        try:
+            self.last_request_time = self.reactor.monotonic()
+            noodle_detect_threshold = self.noodle_threshold_low
+            if self.config['noodle']['sensitivity'] == SENSITIVITY_HIGH:
+                noodle_detect_threshold = self.noodle_threshold_high
+
+            params = {
+                "labels": ["noodle"],
+                "detect_status": DETECT_STATUS_FIRST_DETECT,
+                "noodle": {
+                    "threshold": noodle_detect_threshold,
+                    "sensitivity": self.config['noodle']['sensitivity']
+                }
+            }
+
+            logging.info(f"[defect_detection] request params: {params}")
+
+            response_info = self.mqtt_jsonrpc.send_request_with_response(
+                                        "camera.detect_capture",
+                                        params,
+                                        timeout=REQUEST_TIMEOUT)
+
+            logging.info(f"[defect_detection] response info: {response_info}")
+
+        except Exception as e:
+            logging.error(f"[defect_detection] request failed: {e}")
+
     def response_callback(self, respond_info):
         try:
             if self.config['main_enable'] == False:
@@ -659,7 +689,10 @@ class DefectDetection:
             logging.info("[defect_detection] start error, detection is disabled")
             return
 
-        if self.config['clean_bed']['enable'] == False and self.config['noodle']['enable'] == False and self.config['residue']['enable'] == False:
+        if self.config['clean_bed']['enable'] == False and \
+                self.config['noodle']['enable'] == False and \
+                self.config['residue']['enable'] == False and \
+                self.config['nozzle']['enable'] == False:
             logging.info("[defect_detection] start error, no defect type is enabled")
             return
 
@@ -681,6 +714,21 @@ class DefectDetection:
                 return
 
         self.request_detect()
+
+    def cmd_DEFECT_DETECT_NOODLE_FIRST(self, gcmd):
+        if self.mqtt_client is None:
+            return
+
+        if self.config['main_enable'] == False:
+            return
+
+        if self.config['noodle']['enable'] == False:
+            return
+
+        toolhead = self.printer.lookup_object("toolhead")
+        toolhead.wait_moves()
+        self._request_detect_noodle_first_sync()
+        toolhead.wait_moves()
 
     def cmd_DEFECT_DETECTION_DETECT_BED(self, gcmd):
         if self.mqtt_client is None:
@@ -879,6 +927,7 @@ class DefectDetection:
 
         toolhead = self.printer.lookup_object("toolhead")
         toolhead.wait_moves()
+        logging.info("[defect_detection] nozzle detecting...")
         old_pos = toolhead.get_position()
         retract_e = 0
         try:

@@ -146,12 +146,14 @@ class TimeLapse:
 
     cmd_TIMELAPSE_STOP_help = "Stop timelapse recording"
     def cmd_TIMELAPSE_STOP(self, gcmd):
+        force = gcmd.get_int('FORCE', 0)
+
         if self.mqtt_client is None:
             self.is_active = False
             gcmd.respond_info("!![timelapse] stop error, mqtt not ready!")
             return
 
-        if self.is_active == False:
+        if self.is_active == False and force == 0:
             gcmd.respond_info("[timelapse] not started!")
             return
 

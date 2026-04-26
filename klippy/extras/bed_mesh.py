@@ -978,7 +978,7 @@ class ProbeManager:
         point_x4, point_y4 = 15.0, 255.0
         z_height, move_speed = 5.0, 200
         safe_move_y_pos = 250
-        max_deviation = 0.85
+        max_deviation = 2
         z_move_speed = 20
         toolhead = self.printer.lookup_object('toolhead')
         with self.lock:
